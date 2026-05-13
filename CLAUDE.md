@@ -90,9 +90,24 @@ Testing is **unit tests first, hardware second**. Never skip to hardware testing
 - Hardware tests are tagged `@pytest.mark.hardware` and excluded from CI
 - Document expected sensor ranges and failure modes in the test file header
 
-### CI (if configured)
-- Run `colcon build` and `colcon test` in sim mode only
-- Hardware-tagged tests are skipped in CI
+### CI (GitHub Actions)
+
+CI runs on every push and pull request targeting `main`. The workflow file lives at `.github/workflows/ci.yml`.
+
+**Stages (run in order):**
+
+| Stage | Tool | Command |
+|-------|------|---------|
+| Lint — Python | `black`, `flake8` | `black --check --line-length 100 src/ tests/` then `flake8 --max-line-length 100 src/ tests/` |
+| Lint — C++ | `ament_lint_auto` | `colcon test --packages-select <pkg> --pytest-args -k ament_lint` |
+| Build | `colcon` | `colcon build --symlink-install` |
+| Test (sim) | `colcon` / `pytest` | `colcon test --event-handlers console_direct+ -- --ros-args -p use_sim:=true` |
+
+**Rules:**
+- All stages must pass before a PR can be merged
+- Hardware-tagged tests (`@pytest.mark.hardware`) are excluded from CI via `pytest -m "not hardware"`
+- CI runs in sim mode only — no physical hardware access
+- A failing lint stage blocks the build and test stages from running
 
 ---
 
@@ -148,6 +163,32 @@ These diagnostic scripts access the Sunfounder SDK directly (bypassing ROS and `
 
 ---
 
+## Python Virtual Environment (Dev Machine Only)
+
+Python toolchain tools (linters, formatters, test runners) must be installed inside a `venv` on the development machine to avoid polluting the system Python.
+
+**Setup:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+```
+
+**`requirements-dev.txt` must pin exact versions**, e.g.:
+```
+black==24.4.2
+flake8==7.0.0
+pytest==8.2.0
+```
+
+**Rules:**
+- `.venv/` is gitignored — never commit it
+- Always activate the venv before running `black`, `flake8`, or `pytest` locally
+- Do not install `rclpy` or any ROS2 packages into the venv — ROS2 is sourced separately via `source /opt/ros/humble/setup.bash`
+- On the Raspberry Pi, Python tools are installed system-wide via `apt`; no venv is needed there
+
+---
+
 ## Development Workflow
 
 Development is done on a separate machine; the Raspberry Pi only runs code. The two are connected via USB Gadget (fixed IP).
@@ -178,7 +219,7 @@ SSH key-based auth must be configured (add dev machine's public key to `~/.ssh/a
 - Branch naming: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`
 - Commits: imperative mood, under 72 chars, e.g. `add ultrasonic driver node`
 - Do not commit generated files (`build/`, `install/`, `log/`, `__pycache__/`)
-- `.gitignore` must cover ROS2 build artifacts and Python cache
+- `.gitignore` must cover ROS2 build artifacts, Python cache, and the dev venv: `build/`, `install/`, `log/`, `__pycache__/`, `.venv/`
 
 ---
 
