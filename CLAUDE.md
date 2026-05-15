@@ -191,7 +191,7 @@ pytest==8.2.0
 
 ## Development Workflow
 
-Development is done on a separate machine; the Raspberry Pi only runs code. The two are connected via USB Gadget (fixed IP).
+Development is done on a separate machine; the Raspberry Pi only runs code. The two are connected via **local WiFi (LAN)**.
 
 **Standard flow for every code change:**
 
@@ -204,11 +204,13 @@ Development is done on a separate machine; the Raspberry Pi only runs code. The 
 
 `deploy.sh` connects via:
 ```bash
-ROVER_IP="192.168.7.2"   # USB Gadget IP (Linux/Mac)
-ROVER_USER="pi"
+ROVER_HOST="raspberrypi.local"   # mDNS hostname — works regardless of IP changes
+ROVER_USER="konkon"
 ```
 
 SSH key-based auth must be configured (add dev machine's public key to `~/.ssh/authorized_keys` on the Pi) so deploy.sh runs without a password prompt.
+
+> **Tip:** To avoid chasing a changing IP, assign the Pi a static IP in your router's DHCP settings (bind by MAC address), or enable mDNS on the Pi (`sudo apt install avahi-daemon`) and connect via `rover.local` instead of an IP.
 
 **Do not develop directly on the Raspberry Pi.**
 
