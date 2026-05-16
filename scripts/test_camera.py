@@ -4,9 +4,11 @@
 """
 Camera diagnostic script.
 
-Attempts to capture a single frame from the camera and save it as a JPEG.
-Tries Pi Camera (picamera2) first; falls back to USB camera (OpenCV) if
-picamera2 is unavailable or no CSI camera is detected.
+Captures a single frame from the CSI camera (Pi Camera via picamera2) and
+saves it as a JPEG.
+
+On Ubuntu 22.04, picamera2 requires libcamera Python bindings that must be
+compiled from source. See "CSI Camera Setup" in README.md for full instructions.
 
 Usage:
     python3 scripts/test_camera.py [--output PATH]
@@ -17,21 +19,53 @@ Exit codes:
 """
 
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 
-CAPTURE_TIMEOUT_S = 5
-DEFAULT_OUTPUT = Path("camera_test.jpg")
+DEFAULT_OUTPUT = Path("/tmp/camera_test.jpg")
+
+_KNOWN_SENSORS = ("ov5647", "imx219", "imx477", "imx708", "ov9281", "arducam")
+_MEDIA_DEVICES = ("/dev/media0", "/dev/media1", "/dev/media2", "/dev/media3")
 
 
-def try_picamera2(output: Path) -> bool:
-    """Attempt capture via picamera2 (CSI / Pi Camera)."""
+def _detect_csi_sensor() -> Optional[str]:
+    """Return the sensor model string if a CSI camera is detected, else None."""
+    for media_dev in _MEDIA_DEVICES:
+        try:
+            result = subprocess.run(
+                ["media-ctl", "-d", media_dev, "--print-topology"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+        for line in result.stdout.splitlines():
+            low = line.lower()
+            if "entity" in low and any(s in low for s in _KNOWN_SENSORS):
+                return line.strip()
+
+    return None
+
+
+def _capture(output: Path) -> bool:
+    """Capture a still frame via picamera2."""
     try:
         from picamera2 import Picamera2  # type: ignore
-    except ImportError:
-        print("[picamera2] Library not installed — skipping CSI camera.")
+    except ImportError as exc:
+        # Distinguish missing picamera2 wheel from missing libcamera bindings.
+        if "libcamera" in str(exc):
+            print(
+                "[picamera2] libcamera Python bindings not found.\n"
+                "           On Ubuntu 22.04 these are not in apt — see README.md."
+            )
+        else:
+            print("[picamera2] Library not installed.")
         return False
 
     try:
@@ -50,41 +84,8 @@ def try_picamera2(output: Path) -> bool:
         return False
 
 
-def try_opencv(output: Path) -> bool:
-    """Attempt capture via OpenCV (USB / V4L2 camera)."""
-    try:
-        import cv2  # type: ignore
-    except ImportError:
-        print("[opencv]   Library not installed — skipping USB camera.")
-        return False
-
-    for device_index in range(4):
-        cap = cv2.VideoCapture(device_index)
-        if not cap.isOpened():
-            continue
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-        ret, frame = cap.read()
-        cap.release()
-
-        if ret and frame is not None:
-            cv2.imwrite(str(output), frame)
-            print(
-                f"[opencv]   Captured frame from /dev/video{device_index} "
-                f"saved to: {output.resolve()}"
-            )
-            return True
-        else:
-            print(f"[opencv]   /dev/video{device_index} opened but read failed.")
-
-    print("[opencv]   No readable USB camera found on /dev/video0–3.")
-    return False
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Camera hardware diagnostic")
+    parser = argparse.ArgumentParser(description="CSI camera diagnostic")
     parser.add_argument(
         "--output",
         type=Path,
@@ -92,27 +93,25 @@ def main() -> int:
         help=f"Output JPEG path (default: {DEFAULT_OUTPUT})",
     )
     args = parser.parse_args()
-
     output: Path = args.output
 
     print("=== Camera Diagnostic ===")
     print(f"Output path : {output.resolve()}")
     print()
 
-    if try_picamera2(output):
-        print("\nResult: PASS (CSI / Pi Camera)")
-        return 0
-
+    sensor = _detect_csi_sensor()
+    if sensor:
+        print(f"[media-ctl] CSI sensor detected: {sensor}")
+    else:
+        print("[media-ctl] No CSI sensor detected — check cable connection.")
     print()
 
-    if try_opencv(output):
-        print("\nResult: PASS (USB Camera via OpenCV)")
+    if _capture(output):
+        print("\nResult: PASS")
+        subprocess.run(["code", str(output)], capture_output=True)
         return 0
 
-    print("\nResult: FAIL — no working camera detected.")
-    print("Check connections and ensure at least one of the following is installed:")
-    print("  CSI camera : pip install picamera2")
-    print("  USB camera : pip install opencv-python")
+    print("\nResult: FAIL")
     return 1
 
 
