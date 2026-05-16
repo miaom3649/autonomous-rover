@@ -19,6 +19,7 @@ Exit codes:
 """
 
 import argparse
+import signal
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ from typing import Optional
 
 
 DEFAULT_OUTPUT = Path("/tmp/camera_test.jpg")
+CAPTURE_TIMEOUT_S = 10
 
 _KNOWN_SENSORS = ("ov5647", "imx219", "imx477", "imx708", "ov9281", "arducam")
 _MEDIA_DEVICES = ("/dev/media0", "/dev/media1", "/dev/media2", "/dev/media3")
@@ -68,17 +70,26 @@ def _capture(output: Path) -> bool:
             print("[picamera2] Library not installed.")
         return False
 
+    def _on_timeout(signum, frame):
+        raise TimeoutError
+
     try:
         cam = Picamera2()
         config = cam.create_still_configuration(main={"size": (1280, 720)})
         cam.configure(config)
         cam.start()
         time.sleep(2)  # warm-up
+        signal.signal(signal.SIGALRM, _on_timeout)
+        signal.alarm(CAPTURE_TIMEOUT_S)
         cam.capture_file(str(output))
+        signal.alarm(0)
         cam.stop()
         cam.close()
         print(f"[picamera2] Captured frame saved to: {output.resolve()}")
         return True
+    except TimeoutError:
+        print(f"[picamera2] Capture timed out after {CAPTURE_TIMEOUT_S}s — check camera cable.")
+        return False
     except Exception as exc:
         print(f"[picamera2] Failed: {exc}")
         return False
