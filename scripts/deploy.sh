@@ -15,6 +15,7 @@ git push origin "$BRANCH"
 ssh "$ROVER_USER@$ROVER_HOST" bash <<EOF
 set -eo pipefail
 cd $ROVER_WS
+rm -rf *
 git fetch origin
 git checkout $BRANCH
 git pull origin $BRANCH
