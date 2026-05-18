@@ -58,38 +58,44 @@ def _detect_robot_hat() -> bool:
 
 
 def _run_sequence(speed: int) -> bool:
-    """Drive rear motors via robot_hat.Motors — steering servo is not touched."""
+    """Drive rear motors via robot_hat.Motor directly — steering servo is not touched."""
     try:
-        from robot_hat import Motors  # type: ignore
+        from robot_hat import Motor, PWM, Pin  # type: ignore
     except ImportError:
         print("[robot_hat] Library not installed — run on the Raspberry Pi with the Sunfounder SDK.")
         return False
 
+    # Pin assignments match Robot Hat V4 motor channel layout.
     try:
-        motors = Motors()
+        motor1 = Motor(PWM("P13"), Pin("D4"))
+        motor2 = Motor(PWM("P12"), Pin("D5"))
     except Exception as exc:
-        print(f"[robot_hat] Failed to initialise Motors: {exc}")
+        print(f"[robot_hat] Failed to initialise motor pins: {exc}")
         return False
+
+    def _set(spd: int) -> None:
+        motor1.speed(spd)
+        motor2.speed(spd)
 
     try:
         print(f"[motor] Forward at speed {speed} for {MOVE_DURATION_S}s …")
-        motors.speed(speed, speed)
+        _set(speed)
         time.sleep(MOVE_DURATION_S)
 
         print("[motor] Stop.")
-        motors.speed(0, 0)
+        _set(0)
         time.sleep(STOP_PAUSE_S)
 
         print(f"[motor] Backward at speed {speed} for {MOVE_DURATION_S}s …")
-        motors.speed(-speed, -speed)
+        _set(-speed)
         time.sleep(MOVE_DURATION_S)
 
         print("[motor] Stop.")
-        motors.speed(0, 0)
+        _set(0)
     except Exception as exc:
         print(f"[motor] Error during motion sequence: {exc}")
         try:
-            motors.speed(0, 0)
+            _set(0)
         except Exception:
             pass
         return False
