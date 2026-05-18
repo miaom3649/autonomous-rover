@@ -13,7 +13,7 @@ Usage:
 
 Exit codes:
     0  — motors ran to completion without errors
-    1  — Robot Hat not detected, picarx SDK not available, or motor error
+    1  — Robot Hat not detected, robot_hat SDK not available, or motor error
 """
 
 import argparse
@@ -58,38 +58,38 @@ def _detect_robot_hat() -> bool:
 
 
 def _run_sequence(speed: int) -> bool:
-    """Initialise picarx and execute forward → stop → backward → stop."""
+    """Drive rear motors via robot_hat.Motors — steering servo is not touched."""
     try:
-        from picarx import Picarx  # type: ignore
+        from robot_hat import Motors  # type: ignore
     except ImportError:
-        print("[picarx] Library not installed — run on the Raspberry Pi with the Sunfounder SDK.")
+        print("[robot_hat] Library not installed — run on the Raspberry Pi with the Sunfounder SDK.")
         return False
 
     try:
-        px = Picarx()
+        motors = Motors()
     except Exception as exc:
-        print(f"[picarx] Failed to initialise: {exc}")
+        print(f"[robot_hat] Failed to initialise Motors: {exc}")
         return False
 
     try:
         print(f"[motor] Forward at speed {speed} for {MOVE_DURATION_S}s …")
-        px.forward(speed)
+        motors.speed(speed, speed)
         time.sleep(MOVE_DURATION_S)
 
         print("[motor] Stop.")
-        px.stop()
+        motors.speed(0, 0)
         time.sleep(STOP_PAUSE_S)
 
         print(f"[motor] Backward at speed {speed} for {MOVE_DURATION_S}s …")
-        px.backward(speed)
+        motors.speed(-speed, -speed)
         time.sleep(MOVE_DURATION_S)
 
         print("[motor] Stop.")
-        px.stop()
+        motors.speed(0, 0)
     except Exception as exc:
         print(f"[motor] Error during motion sequence: {exc}")
         try:
-            px.stop()
+            motors.speed(0, 0)
         except Exception:
             pass
         return False
