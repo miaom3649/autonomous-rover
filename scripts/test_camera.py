@@ -119,7 +119,7 @@ def main() -> int:
 
     if _capture(output):
         print("\nResult: PASS")
-        subprocess.run(["code", str(output)], capture_output=True)
+        print(f"Image saved to: {output.resolve()}")
         return 0
 
     print("\nResult: FAIL")
