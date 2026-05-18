@@ -154,6 +154,10 @@ scripts/
 └── test_servo.py         # Sweep servo left, center, right
 ```
 
+After a successful capture, `test_camera.py` automatically scps the image to `~/dev/autonomous-rover/log/` on the dev machine (detected via the `SSH_CLIENT` env var set by the SSH session). Override the dev username with `ROVER_DEV_USER=<user>` if needed. If not running over SSH, the local Pi path is printed instead.
+
+`log/` is gitignored and used for all transient diagnostic output (images, logs, etc.). Do not commit anything from this directory.
+
 These diagnostic scripts access the Sunfounder SDK directly (bypassing ROS and `rover_base`) — this is intentional. Each script must include the following header comment:
 
 ```python
