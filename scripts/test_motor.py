@@ -67,14 +67,14 @@ def _run_sequence(speed: int) -> bool:
 
     # Pin assignments match Robot Hat V4 motor channel layout.
     try:
-        motor1 = Motor(PWM("P13"), Pin("D4"), is_reversed=True)
+        motor1 = Motor(PWM("P13"), Pin("D4"))
         motor2 = Motor(PWM("P12"), Pin("D5"))
     except Exception as exc:
         print(f"[robot_hat] Failed to initialise motor pins: {exc}")
         return False
 
     def _set(spd: int) -> None:
-        motor1.speed(spd)
+        motor1.speed(-spd)  # P13/D4 channel is physically mounted in reverse
         motor2.speed(spd)
 
     try:
