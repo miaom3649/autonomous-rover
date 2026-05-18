@@ -23,6 +23,28 @@ On the **dev machine**, copy your public key to the Pi so `deploy.sh` runs witho
 ssh-copy-id konkon@raspberrypi.local
 ```
 
+### 3. Enable SSH on the dev machine (required for camera diagnostics)
+
+`test_camera.py` scps captured images back to `log/` on the dev machine over the same SSH session. For this to work, the dev machine must accept incoming SSH connections from the Pi.
+
+On the **dev machine**:
+```bash
+# Install and start the SSH server if not already running
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+```
+
+Then, on the **Pi**, authorise it to connect back to the dev machine (one-time):
+```bash
+# Generate a key pair on the Pi if one doesn't exist yet
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+
+# Copy the Pi's public key to the dev machine (prompts for dev machine password once)
+ssh-copy-id konkon@<dev-machine-ip>
+```
+
+After this, `test_camera.py` will automatically copy the captured image to `~/dev/autonomous-rover/log/` on the dev machine each time it runs. The `log/` directory is gitignored and holds all transient diagnostic output.
+
 ### 4. Install ROS2 Humble
 
 SSH into the Pi and run:
