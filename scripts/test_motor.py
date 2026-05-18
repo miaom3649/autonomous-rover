@@ -13,7 +13,7 @@ Usage:
 
 Exit codes:
     0  — motors ran to completion without errors
-    1  — picarx SDK not available or motor initialisation failed
+    1  — Robot Hat not detected, picarx SDK not available, or motor error
 """
 
 import argparse
@@ -24,6 +24,37 @@ import time
 DEFAULT_SPEED = 30  # percent, 0–100
 MOVE_DURATION_S = 5
 STOP_PAUSE_S = 1
+
+# Robot Hat V4 sits at one of these I2C addresses on bus 1.
+_ROBOT_HAT_I2C_ADDRS = (0x14, 0x15)
+_I2C_BUS = 1
+
+
+def _detect_robot_hat() -> bool:
+    """Return True if the Robot Hat V4 responds on the I2C bus."""
+    try:
+        import smbus2  # type: ignore
+    except ImportError:
+        print("[i2c] smbus2 not available — skipping board detection.")
+        return True  # can't check; let picarx try anyway
+
+    bus = smbus2.SMBus(_I2C_BUS)
+    try:
+        for addr in _ROBOT_HAT_I2C_ADDRS:
+            try:
+                bus.read_byte(addr)
+                print(f"[i2c] Robot Hat detected at address 0x{addr:02X}.")
+                return True
+            except OSError:
+                continue
+        print(
+            f"[i2c] No response at addresses "
+            f"{', '.join(f'0x{a:02X}' for a in _ROBOT_HAT_I2C_ADDRS)} — "
+            "is the driver board powered and connected?"
+        )
+        return False
+    finally:
+        bus.close()
 
 
 def _run_sequence(speed: int) -> bool:
@@ -85,6 +116,10 @@ def main() -> int:
     print(f"Speed       : {args.speed}%")
     print(f"Duration    : {MOVE_DURATION_S}s forward + {MOVE_DURATION_S}s backward")
     print()
+
+    if not _detect_robot_hat():
+        print("\nResult: FAIL")
+        return 1
 
     if _run_sequence(args.speed):
         print("\nResult: PASS")
