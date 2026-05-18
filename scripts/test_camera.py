@@ -19,6 +19,7 @@ Exit codes:
 """
 
 import argparse
+import os
 import signal
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from typing import Optional
 
 
 DEFAULT_OUTPUT = Path("/tmp/camera_test.jpg")
+DEV_LOG_DIR = "~/dev/autonomous-rover/log"
 CAPTURE_TIMEOUT_S = 10
 
 _KNOWN_SENSORS = ("ov5647", "imx219", "imx477", "imx708", "ov9281", "arducam")
@@ -95,6 +97,29 @@ def _capture(output: Path) -> bool:
         return False
 
 
+def _scp_to_dev(local_path: Path) -> None:
+    """Scp the captured image back to the dev machine if connected via SSH."""
+    ssh_client_env = os.environ.get("SSH_CLIENT", "").split()
+    if not ssh_client_env:
+        print(f"Image saved locally: {local_path.resolve()}")
+        return
+
+    dev_ip = ssh_client_env[0]
+    dev_user = os.environ.get("ROVER_DEV_USER", "konkon")
+    remote_dir = f"{dev_user}@{dev_ip}:{DEV_LOG_DIR}/"
+
+    result = subprocess.run(
+        ["scp", str(local_path), remote_dir],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"Image copied to dev machine: {DEV_LOG_DIR}/{local_path.name}")
+    else:
+        print(f"scp failed: {result.stderr.strip()}")
+        print(f"Image saved locally on Pi: {local_path.resolve()}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="CSI camera diagnostic")
     parser.add_argument(
@@ -119,7 +144,7 @@ def main() -> int:
 
     if _capture(output):
         print("\nResult: PASS")
-        subprocess.run(["code", str(output)], capture_output=True)
+        _scp_to_dev(output)
         return 0
 
     print("\nResult: FAIL")
