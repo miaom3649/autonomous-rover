@@ -51,7 +51,10 @@ class UltrasonicSensorNode(LifecycleNode):
         self._trig_pin: str = self.get_parameter("trig_pin").value
         self._echo_pin: str = self.get_parameter("echo_pin").value
 
-        self._publisher = self.create_lifecycle_publisher(
+        # Use a regular publisher — lifecycle state is controlled via timer start/stop.
+        # create_lifecycle_publisher in rclpy/Humble does not reliably activate
+        # managed publishers automatically on Python lifecycle nodes.
+        self._publisher = self.create_publisher(
             Range, "/rover/ultrasonic/range", qos_profile_sensor_data
         )
 
