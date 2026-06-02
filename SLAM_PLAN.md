@@ -10,7 +10,7 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 - Location: `src/rover_base/rover_base/camera_node.py`
 - Publishes `/rover/camera/image_raw` and `/rover/camera/camera_info`
 - Supports `use_sim:=true` mode (publishes static test frames)
-- Status: **TODO**
+- Status: **Done**
 
 ### Step 2: Camera Calibration
 - Use `ros2 run camera_calibration cameracalibrator` with a checkerboard target
