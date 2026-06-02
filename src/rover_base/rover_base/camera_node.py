@@ -5,8 +5,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 
 
-_DEFAULT_WIDTH = 640
-_DEFAULT_HEIGHT = 480
+_DEFAULT_WIDTH = 320
+_DEFAULT_HEIGHT = 240
 _DEFAULT_RATE_HZ = 15.0
 _DEFAULT_FRAME_ID = "camera_link"
 
