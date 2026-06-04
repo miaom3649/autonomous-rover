@@ -28,8 +28,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--size", default="8x6",
                    help="Inner corner count as COLSxROWS (default: 8x6)")
-    p.add_argument("--square", type=float, default=0.009,
-                   help="Square side length in metres (default: 0.009)")
+    p.add_argument("--square", type=float, default=0.025,
+                   help="Square side length in metres (default: 0.025)")
     return p.parse_args()
 
 
@@ -70,12 +70,44 @@ def collect_points(
 
 def calibrate(
     obj_points: list, img_points: list, img_shape: tuple[int, int]
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, list, list]:
     h, w = img_shape
-    ret, mtx, dist, _, _ = cv2.calibrateCamera(
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
         obj_points, img_points, (w, h), None, None
     )
-    return mtx, dist, ret
+    return mtx, dist, ret, rvecs, tvecs
+
+
+def per_frame_rms(
+    obj_points: list,
+    img_points: list,
+    rvecs: list,
+    tvecs: list,
+    mtx: np.ndarray,
+    dist: np.ndarray,
+) -> list[float]:
+    errors = []
+    for obj, img, rvec, tvec in zip(obj_points, img_points, rvecs, tvecs):
+        projected, _ = cv2.projectPoints(obj, rvec, tvec, mtx, dist)
+        err = np.sqrt(np.mean((img - projected) ** 2))
+        errors.append(float(err))
+    return errors
+
+
+def reject_outliers(
+    obj_points: list,
+    img_points: list,
+    errors: list[float],
+    threshold: float,
+) -> tuple[list, list, list[int]]:
+    kept_obj, kept_img, rejected_idx = [], [], []
+    for i, (obj, img, err) in enumerate(zip(obj_points, img_points, errors)):
+        if err <= threshold:
+            kept_obj.append(obj)
+            kept_img.append(img)
+        else:
+            rejected_idx.append(i)
+    return kept_obj, kept_img, rejected_idx
 
 
 def write_yaml(
@@ -125,8 +157,24 @@ def main() -> None:
         print("Not enough usable frames (need at least 5). Capture more frames.")
         sys.exit(1)
 
-    print("Running calibration...")
-    mtx, dist, rms = calibrate(obj_pts, img_pts, img_shape)
+    print("Running initial calibration...")
+    mtx, dist, rms, rvecs, tvecs = calibrate(obj_pts, img_pts, img_shape)
+    print(f"Initial RMS: {rms:.4f} px")
+
+    # Iteratively reject frames whose per-frame error exceeds 2× the median.
+    for iteration in range(5):
+        errors = per_frame_rms(obj_pts, img_pts, rvecs, tvecs, mtx, dist)
+        threshold = 2.0 * float(np.median(errors))
+        obj_pts, img_pts, rejected = reject_outliers(obj_pts, img_pts, errors, threshold)
+        if not rejected:
+            break
+        print(f"Iteration {iteration + 1}: rejected {len(rejected)} frame(s) "
+              f"with error > {threshold:.2f} px — {len(obj_pts)} remaining")
+        if len(obj_pts) < 5:
+            print("Not enough frames left after filtering. Stopping early.")
+            break
+        mtx, dist, rms, rvecs, tvecs = calibrate(obj_pts, img_pts, img_shape)
+        print(f"  RMS after rejection: {rms:.4f} px")
 
     h, w = img_shape
     write_yaml(OUTPUT_YAML, mtx, dist, w, h, rms)
