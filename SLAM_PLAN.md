@@ -13,9 +13,10 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 - Status: **Done**
 
 ### Step 2: Camera Calibration
-- Use `ros2 run camera_calibration cameracalibrator` with a checkerboard target
+- Captured frames at 640x480 via `capture_calibration_frames.py`, scaled intrinsics ×0.5 for 320x240 output
 - Output: `config/camera.yaml` (focal length, principal point, distortion coefficients)
-- Status: **TODO — requires physical hardware**
+- RMS reprojection error: 0.7344 px
+- Status: **Done**
 
 ### Step 3: Install ORB-SLAM3 on the Pi
 - Build ORB-SLAM3 from source + `ORB-SLAM3-ROS2` wrapper
