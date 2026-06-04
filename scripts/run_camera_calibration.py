@@ -30,6 +30,9 @@ def parse_args() -> argparse.Namespace:
                    help="Inner corner count as COLSxROWS (default: 8x6)")
     p.add_argument("--square", type=float, default=0.025,
                    help="Square side length in metres (default: 0.025)")
+    p.add_argument("--scale", type=float, default=1.0,
+                   help="Scale factor applied to intrinsics and image size before saving "
+                        "(e.g. 0.5 to convert 640x480 calibration frames to 320x240 output)")
     return p.parse_args()
 
 
@@ -177,6 +180,15 @@ def main() -> None:
         print(f"  RMS after rejection: {rms:.4f} px")
 
     h, w = img_shape
+    if args.scale != 1.0:
+        mtx = mtx.copy()
+        mtx[0, 0] *= args.scale   # fx
+        mtx[1, 1] *= args.scale   # fy
+        mtx[0, 2] *= args.scale   # cx
+        mtx[1, 2] *= args.scale   # cy
+        w = round(w * args.scale)
+        h = round(h * args.scale)
+        print(f"\nScaled intrinsics by {args.scale} → output size {w}x{h}")
     write_yaml(OUTPUT_YAML, mtx, dist, w, h, rms)
 
     print(f"\nCalibration complete — RMS reprojection error: {rms:.4f} px")
