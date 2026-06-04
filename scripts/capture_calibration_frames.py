@@ -4,15 +4,19 @@
 """
 Capture calibration frames from /rover/camera/image_raw.
 
-A live preview window shows the camera feed.
-Press SPACE to save the current frame, 'q' to quit.
-Saved frames go to OUTPUT_DIR as frame_000.jpg, frame_001.jpg, ...
+A live preview window shows the camera feed with detected checkerboard corners
+drawn in real time. Frames are saved automatically whenever a checkerboard is
+detected, subject to a cooldown between captures.
+
+Press 'q' to quit.
 
 Usage:
-    python3 scripts/capture_calibration_frames.py
+    python3 scripts/capture_calibration_frames.py [--size COLSxROWS] [--cooldown SECONDS]
 """
 
+import argparse
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -25,6 +29,17 @@ from sensor_msgs.msg import Image
 
 OUTPUT_DIR = Path("/tmp/calibration_frames")
 MIN_FRAMES = 20
+DEFAULT_BOARD_SIZE = (8, 6)
+DEFAULT_COOLDOWN_S = 2.0
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--size", default="8x6",
+                   help="Inner corner count as COLSxROWS (default: 8x6)")
+    p.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S,
+                   help="Seconds between auto-captures (default: 2.0)")
+    return p.parse_args()
 
 
 class _FrameCapture(Node):
@@ -32,7 +47,6 @@ class _FrameCapture(Node):
         super().__init__("frame_capture")
         self._latest: np.ndarray | None = None
         self._lock = threading.Lock()
-        self._count = 0
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -54,15 +68,12 @@ class _FrameCapture(Node):
             return None
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    def save_frame(self, bgr: np.ndarray) -> None:
-        path = OUTPUT_DIR / f"frame_{self._count:03d}.jpg"
-        cv2.imwrite(str(path), bgr)
-        self._count += 1
-        remaining = max(0, MIN_FRAMES - self._count)
-        print(f"Saved {path}  ({self._count} captured, {remaining} more recommended)")
-
 
 def main() -> None:
+    args = parse_args()
+    cols, rows = (int(x) for x in args.size.lower().split("x"))
+    board_size = (cols, rows)
+
     rclpy.init()
     node = _FrameCapture()
 
@@ -70,17 +81,21 @@ def main() -> None:
     spin_thread.start()
 
     print(f"Saving frames to: {OUTPUT_DIR}")
+    print(f"Board: {cols}x{rows} inner corners")
+    print(f"Auto-capture cooldown: {args.cooldown}s")
     print(f"Recommended minimum: {MIN_FRAMES} frames from different angles")
-    print("SPACE — capture frame   q — quit\n")
+    print("q — quit\n")
 
     cv2.namedWindow("Calibration Preview", cv2.WINDOW_NORMAL)
+
+    count = 0
+    last_capture_time = 0.0
 
     try:
         while True:
             bgr = node.latest_bgr()
 
             if bgr is None:
-                # Show a blank placeholder until the first frame arrives
                 placeholder = np.zeros((240, 320, 3), dtype=np.uint8)
                 cv2.putText(
                     placeholder, "Waiting for camera...", (20, 120),
@@ -88,22 +103,45 @@ def main() -> None:
                 )
                 cv2.imshow("Calibration Preview", placeholder)
             else:
-                overlay = bgr.copy()
-                cv2.putText(
-                    overlay,
-                    f"Captured: {node._count}  |  SPACE=save  q=quit",
-                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1,
-                )
-                cv2.imshow("Calibration Preview", overlay)
+                display = bgr.copy()
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                found, corners = cv2.findChessboardCorners(gray, board_size, None)
 
-            key = cv2.waitKey(30) & 0xFF
-            if key == ord("q"):
-                break
-            elif key == ord(" "):
-                if bgr is None:
-                    print("[!] No frame received yet — is camera_node active?")
+                now = time.monotonic()
+                cooldown_remaining = max(0.0, args.cooldown - (now - last_capture_time))
+
+                if found:
+                    corners_refined = cv2.cornerSubPix(
+                        gray, corners, (11, 11), (-1, -1),
+                        (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001),
+                    )
+                    cv2.drawChessboardCorners(display, board_size, corners_refined, found)
+
+                    if cooldown_remaining == 0.0:
+                        path = OUTPUT_DIR / f"frame_{count:03d}.jpg"
+                        cv2.imwrite(str(path), bgr)
+                        count += 1
+                        last_capture_time = now
+                        remaining = max(0, MIN_FRAMES - count)
+                        print(f"Saved {path}  ({count} captured, {remaining} more recommended)")
+
+                # Status overlay
+                if found and cooldown_remaining > 0.0:
+                    status = f"Detected — next in {cooldown_remaining:.1f}s"
+                    color = (0, 200, 255)
+                elif found:
+                    status = "Detected — saving!"
+                    color = (0, 255, 0)
                 else:
-                    node.save_frame(bgr)
+                    status = "No checkerboard detected"
+                    color = (0, 0, 220)
+
+                cv2.putText(display, f"Captured: {count}  |  {status}",
+                            (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
+                cv2.imshow("Calibration Preview", display)
+
+            if cv2.waitKey(30) & 0xFF == ord("q"):
+                break
     except KeyboardInterrupt:
         pass
     finally:
@@ -111,9 +149,9 @@ def main() -> None:
         node.destroy_node()
         rclpy.shutdown()
 
-    print(f"\nDone. {node._count} frames saved to {OUTPUT_DIR}")
-    if node._count < MIN_FRAMES:
-        print(f"[!] Only {node._count} frames — recommend at least {MIN_FRAMES} for accurate calibration.")
+    print(f"\nDone. {count} frames saved to {OUTPUT_DIR}")
+    if count < MIN_FRAMES:
+        print(f"[!] Only {count} frames — recommend at least {MIN_FRAMES} for accurate calibration.")
     else:
         print("Run next step:  python3 scripts/run_camera_calibration.py")
 
