@@ -4,14 +4,14 @@
 """
 Capture calibration frames from /rover/camera/image_raw.
 
-Press Enter to save the current frame, 'q' + Enter to quit.
+A live preview window shows the camera feed.
+Press SPACE to save the current frame, 'q' to quit.
 Saved frames go to OUTPUT_DIR as frame_000.jpg, frame_001.jpg, ...
 
 Usage:
     python3 scripts/capture_calibration_frames.py
 """
 
-import sys
 import threading
 from pathlib import Path
 
@@ -47,20 +47,19 @@ class _FrameCapture(Node):
         with self._lock:
             self._latest = arr
 
-    def save_frame(self) -> None:
+    def latest_bgr(self) -> np.ndarray | None:
         with self._lock:
             frame = self._latest
-
         if frame is None:
-            print("  [!] No frame received yet — is camera_node active?")
-            return
+            return None
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
+    def save_frame(self, bgr: np.ndarray) -> None:
         path = OUTPUT_DIR / f"frame_{self._count:03d}.jpg"
-        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         cv2.imwrite(str(path), bgr)
         self._count += 1
         remaining = max(0, MIN_FRAMES - self._count)
-        print(f"  Saved {path}  ({self._count} captured, {remaining} more recommended)")
+        print(f"Saved {path}  ({self._count} captured, {remaining} more recommended)")
 
 
 def main() -> None:
@@ -72,17 +71,43 @@ def main() -> None:
 
     print(f"Saving frames to: {OUTPUT_DIR}")
     print(f"Recommended minimum: {MIN_FRAMES} frames from different angles")
-    print("Press Enter to capture a frame, 'q' + Enter to finish.\n")
+    print("SPACE — capture frame   q — quit\n")
+
+    cv2.namedWindow("Calibration Preview", cv2.WINDOW_NORMAL)
 
     try:
         while True:
-            line = sys.stdin.readline().strip().lower()
-            if line == "q":
+            bgr = node.latest_bgr()
+
+            if bgr is None:
+                # Show a blank placeholder until the first frame arrives
+                placeholder = np.zeros((240, 320, 3), dtype=np.uint8)
+                cv2.putText(
+                    placeholder, "Waiting for camera...", (20, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1,
+                )
+                cv2.imshow("Calibration Preview", placeholder)
+            else:
+                overlay = bgr.copy()
+                cv2.putText(
+                    overlay,
+                    f"Captured: {node._count}  |  SPACE=save  q=quit",
+                    (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1,
+                )
+                cv2.imshow("Calibration Preview", overlay)
+
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord("q"):
                 break
-            node.save_frame()
+            elif key == ord(" "):
+                if bgr is None:
+                    print("[!] No frame received yet — is camera_node active?")
+                else:
+                    node.save_frame(bgr)
     except KeyboardInterrupt:
         pass
     finally:
+        cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
 
