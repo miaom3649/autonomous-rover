@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "ultrasonic_sensor_node = rover_base.ultrasonic_sensor_node:main",
+            "camera_node = rover_base.camera_node:main",
         ],
     },
 )

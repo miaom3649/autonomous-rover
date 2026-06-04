@@ -10,6 +10,7 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>lifecycle_msgs</depend>
+  <depend>image_transport</depend>
 
   <test_depend>ament_pep8</test_depend>
   <test_depend>ament_pyflakes</test_depend>
