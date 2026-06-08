@@ -10,6 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
         (f"share/{package_name}/launch", [
+            "launch/teleop.launch.py",
             "launch/slam.launch.py",
             "launch/nav.launch.py",
         ]),
