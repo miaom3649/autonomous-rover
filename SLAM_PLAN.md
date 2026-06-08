@@ -32,9 +32,10 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 - Status: **Done**
 
 ### Step 5: Nav2 Autonomous Navigation
-- Install: `ros-humble-navigation2`
-- Config: `config/nav2_params.yaml` (robot footprint, costmap, planner parameters)
-- Status: **TODO**
+- Install on Pi: `sudo apt install -y ros-humble-navigation2 ros-humble-nav2-bringup`
+- Config: `config/nav2_params.yaml` (PiCar-X footprint 21×16.5 cm, RPP controller, NavFn planner, Pi 4 tuned frequencies)
+- Localization: ORB-SLAM3 provides map→odom→base_link TF (no lidar/AMCL needed)
+- Status: **Done**
 
 ### Step 6: Launch Files
 - Location: `src/rover_bringup/` (new package)
