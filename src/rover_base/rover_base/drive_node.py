@@ -1,20 +1,27 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Range
 
 
 class DriveNode(Node):
-    """Subscribe to /rover/cmd_vel and drive PiCar-X motors."""
+    """Subscribe to /rover/cmd_vel and drive PiCar-X motors.
+
+    Also publishes ultrasonic range on /rover/ultrasonic/range using the
+    Picarx instance (avoids GPIO conflict with a separate ultrasonic node).
+    """
 
     def __init__(self) -> None:
         super().__init__("drive_node")
 
         self.declare_parameter("use_sim", False)
-        self.declare_parameter("max_linear_vel", 0.5)     # m/s at full throttle
-        self.declare_parameter("max_angular_vel", 2.0)    # rad/s at full lock
-        self.declare_parameter("max_motor_speed", 50)     # SDK scale 0–100
-        self.declare_parameter("max_steering_angle", 30.0)  # degrees
-        self.declare_parameter("cmd_timeout", 0.5)        # stop if no cmd for this long
+        self.declare_parameter("max_linear_vel", 0.5)
+        self.declare_parameter("max_angular_vel", 2.0)
+        self.declare_parameter("max_motor_speed", 50)
+        self.declare_parameter("max_steering_angle", 30.0)
+        self.declare_parameter("cmd_timeout", 0.5)
+        self.declare_parameter("ultrasonic_rate_hz", 10.0)
 
         self._use_sim = self.get_parameter("use_sim").value
         self._max_linear = self.get_parameter("max_linear_vel").value
@@ -22,6 +29,7 @@ class DriveNode(Node):
         self._max_speed = self.get_parameter("max_motor_speed").value
         self._max_angle = self.get_parameter("max_steering_angle").value
         self._cmd_timeout = self.get_parameter("cmd_timeout").value
+        self._ultrasonic_rate = self.get_parameter("ultrasonic_rate_hz").value
 
         if not self._use_sim:
             from picarx import Picarx  # type: ignore[import]
@@ -30,9 +38,12 @@ class DriveNode(Node):
             self._px = None
 
         self._sub = self.create_subscription(Twist, "/rover/cmd_vel", self._on_cmd_vel, 10)
+        self._range_pub = self.create_publisher(
+            Range, "/rover/ultrasonic/range", qos_profile_sensor_data
+        )
         self._last_cmd = self.get_clock().now()
-        # Check at 10 Hz whether the command stream has gone silent
         self.create_timer(0.1, self._watchdog)
+        self.create_timer(1.0 / self._ultrasonic_rate, self._publish_range)
 
         self.get_logger().info(f"Drive node ready (sim={self._use_sim})")
 
@@ -61,6 +72,25 @@ class DriveNode(Node):
             self._px.backward(-speed)
         else:
             self._px.stop()
+
+    def _publish_range(self) -> None:
+        msg = Range()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "ultrasonic_link"
+        msg.radiation_type = Range.ULTRASOUND
+        msg.field_of_view = 0.26  # ~15 degrees in radians
+        msg.min_range = 0.02
+        msg.max_range = 4.00
+
+        if self._use_sim:
+            msg.range = 1.0
+        else:
+            reading = self._px.ultrasonic.read()
+            if reading is None or reading < 0:
+                return
+            msg.range = float(reading) / 100.0  # cm → m
+
+        self._range_pub.publish(msg)
 
     def _watchdog(self) -> None:
         elapsed = (self.get_clock().now() - self._last_cmd).nanoseconds * 1e-9

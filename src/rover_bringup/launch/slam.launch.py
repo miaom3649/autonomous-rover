@@ -20,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument("use_sim", default_value="false"),
 
+        # drive_node owns the Picarx instance and also publishes ultrasonic range
         Node(
             package="rover_base",
             executable="drive_node",
@@ -32,21 +33,15 @@ def generate_launch_description() -> LaunchDescription:
             name="camera_node",
             parameters=[{"use_sim": use_sim}],
         ),
-        Node(
-            package="rover_base",
-            executable="ultrasonic_sensor_node",
-            name="ultrasonic_sensor_node",
-            parameters=[{"use_sim": use_sim}],
-        ),
 
-        # Activate lifecycle nodes
+        # Activate lifecycle nodes (camera only — ultrasonic handled by drive_node)
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager_slam",
             parameters=[{
                 "autostart": True,
-                "node_names": ["camera_node", "ultrasonic_sensor_node"],
+                "node_names": ["camera_node"],
             }],
         ),
 
