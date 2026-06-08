@@ -27,5 +27,19 @@ Camera.RGB:    1
 ORBextractor.nFeatures:   500
 ORBextractor.scaleFactor: 1.2
 ORBextractor.nLevels:     8
-ORBextractor.iniThFAST:   20
-ORBextractor.minThFAST:   7
+ORBextractor.iniThFAST:   10
+ORBextractor.minThFAST:   5
+
+#--------------------------------------------------------------------------------------------
+# Viewer — required fields even when use_viewer=false
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
