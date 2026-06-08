@@ -20,7 +20,11 @@ rm -rf "$ROVER_WS"
 git clone --branch $BRANCH $REPO_URL $ROVER_WS
 cd $ROVER_WS
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install
+colcon build --symlink-install \
+  --packages-select rover_slam --parallel-workers 1 \
+  --cmake-args -DORB_SLAM3_ROOT_DIR=\$HOME/ORB_SLAM3 -DPangolin_DIR=\$HOME/Pangolin/build
+colcon build --symlink-install \
+  --packages-skip rover_slam
 echo "Build complete."
 EOF
 
