@@ -20,8 +20,11 @@ source /opt/ros/humble/setup.bash
 if [ ! -d "$ROVER_WS/.git" ]; then
   echo "Fresh install — cloning repo..."
   git clone --branch $BRANCH $REPO_URL $ROVER_WS
-  sudo apt-get install -y ros-humble-teleop-twist-keyboard
 fi
+
+# Ensure ROS tools are installed
+dpkg -s ros-humble-teleop-twist-keyboard &>/dev/null || \
+  sudo apt-get install -y ros-humble-teleop-twist-keyboard
 
 cd $ROVER_WS
 git fetch origin
