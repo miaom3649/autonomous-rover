@@ -24,6 +24,12 @@ def generate_launch_description() -> LaunchDescription:
         # ── Hardware nodes ────────────────────────────────────────────────────
         Node(
             package="rover_base",
+            executable="drive_node",
+            name="drive_node",
+            parameters=[{"use_sim": use_sim}],
+        ),
+        Node(
+            package="rover_base",
             executable="camera_node",
             name="camera_node",
             parameters=[{"use_sim": use_sim}],
