@@ -16,12 +16,12 @@ class DriveNode(Node):
         self.declare_parameter("max_steering_angle", 30.0)  # degrees
         self.declare_parameter("cmd_timeout", 0.5)        # stop if no cmd for this long
 
-        self._use_sim = self.get_parameter("use_sim").as_bool()
-        self._max_linear = self.get_parameter("max_linear_vel").as_double()
-        self._max_angular = self.get_parameter("max_angular_vel").as_double()
-        self._max_speed = self.get_parameter("max_motor_speed").as_integer()
-        self._max_angle = self.get_parameter("max_steering_angle").as_double()
-        self._cmd_timeout = self.get_parameter("cmd_timeout").as_double()
+        self._use_sim = self.get_parameter("use_sim").value
+        self._max_linear = self.get_parameter("max_linear_vel").value
+        self._max_angular = self.get_parameter("max_angular_vel").value
+        self._max_speed = self.get_parameter("max_motor_speed").value
+        self._max_angle = self.get_parameter("max_steering_angle").value
+        self._cmd_timeout = self.get_parameter("cmd_timeout").value
 
         if not self._use_sim:
             from picarx import Picarx  # type: ignore[import]
