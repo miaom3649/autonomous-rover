@@ -19,15 +19,17 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 - Status: **Done**
 
 ### Step 3: Install ORB-SLAM3 on the Pi
-- Build ORB-SLAM3 from source + `ORB-SLAM3-ROS2` wrapper
-- Dependencies: OpenCV, Eigen3, Pangolin
-- Status: **TODO — run on Pi, ~1 hour build time**
+- `libORB_SLAM3.so` compiled successfully at `~/ORB_SLAM3/lib/`
+- Lightweight ROS2 wrapper: `src/rover_slam/` (single .cpp, links libORB_SLAM3.so)
+- Publishes `/orb_slam3/pose` (geometry_msgs/PoseStamped)
+- Build: `colcon build --packages-select rover_slam --parallel-workers 1 --cmake-args -DORB_SLAM3_ROOT_DIR=$HOME/ORB_SLAM3 -DPangolin_DIR=$HOME/Pangolin/build`
+- Status: **Code written — needs colcon build on Pi**
 
 ### Step 4: SLAM Pose Bridge + Config
 - Location: `src/rover_navigation/rover_navigation/slam_pose_bridge.py`
-- Subscribes to raw ORB-SLAM3 pose output, republishes as `nav_msgs/Odometry` on `/rover/odom`
-- Config: `config/orbslam3.yaml` (feature count and other Pi 4 tuning parameters)
-- Status: **TODO**
+- Subscribes to `/orb_slam3/pose`, republishes as `nav_msgs/Odometry` on `/rover/odom`
+- Config: `config/orbslam3.yaml` (500 features, Pi 4 tuned)
+- Status: **Done**
 
 ### Step 5: Nav2 Autonomous Navigation
 - Install: `ros-humble-navigation2`
