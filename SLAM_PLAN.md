@@ -39,9 +39,10 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 
 ### Step 6: Launch Files
 - Location: `src/rover_bringup/` (new package)
-- `slam.launch.py` — mapping mode: camera + ultrasonic + ORB-SLAM3 + pose bridge
-- `nav.launch.py` — navigation mode: load existing map + Nav2
-- Status: **TODO**
+- `slam.launch.py` — mapping mode: camera + ultrasonic + ORB-SLAM3 + pose bridge + static map→odom TF
+- `nav.launch.py` — navigation mode: all SLAM nodes + Nav2 stack (map_server, controller, planner, bt_navigator, lifecycle_manager)
+- `slam_pose_bridge` updated to broadcast `odom→base_link` TF (required by Nav2 costmap)
+- Status: **Done**
 
 ---
 
