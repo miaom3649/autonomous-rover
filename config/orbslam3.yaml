@@ -18,7 +18,7 @@ Camera.p2: -0.0031368694154414716
 
 Camera.width:  320
 Camera.height: 240
-Camera.fps:    15
+Camera.fps:    10
 Camera.RGB:    1
 
 #--------------------------------------------------------------------------------------------
@@ -27,8 +27,8 @@ Camera.RGB:    1
 ORBextractor.nFeatures:   500
 ORBextractor.scaleFactor: 1.2
 ORBextractor.nLevels:     8
-ORBextractor.iniThFAST:   10
-ORBextractor.minThFAST:   5
+ORBextractor.iniThFAST:   5
+ORBextractor.minThFAST:   1
 
 #--------------------------------------------------------------------------------------------
 # Viewer — required fields even when use_viewer=false
