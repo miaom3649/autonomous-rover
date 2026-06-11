@@ -75,6 +75,7 @@ def generate_launch_description() -> LaunchDescription:
             name="slam_toolbox",
             parameters=[slam_toolbox_params],
             remappings=[("pose", "/slam_toolbox/pose")],
+            ros_arguments=["--log-level", "WARN"],
         ),
 
         Node(

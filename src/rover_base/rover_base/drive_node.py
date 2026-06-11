@@ -59,7 +59,7 @@ class DriveNode(Node):
         )
         angle = max(-self._max_angle,
                     min(self._max_angle,
-                        angular_z / self._max_angular * self._max_angle))
+                        -angular_z / self._max_angular * self._max_angle))
 
         if self._use_sim:
             self.get_logger().debug(f"[sim] speed={speed} angle={angle:.1f}°")

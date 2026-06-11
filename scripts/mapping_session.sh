@@ -45,8 +45,9 @@ echo ""
 ros2 run teleop_twist_keyboard teleop_twist_keyboard \
     --ros-args --remap cmd_vel:=/rover/cmd_vel
 
-# ── 4. Save map ───────────────────────────────────────────────────────────
+# ── 4. Save map via slam_toolbox service (more reliable than map_saver_cli) ──
 echo "Saving map..."
 mkdir -p "$HOME/maps"
-ros2 run nav2_map_server map_saver_cli -f "$HOME/maps/room"
+ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
+    "{name: {data: '$HOME/maps/room'}}"
 echo "Done — map saved to ~/maps/room.pgm and ~/maps/room.yaml"
