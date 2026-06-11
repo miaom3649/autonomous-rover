@@ -8,4 +8,4 @@ drive_node:
     ultrasonic_rate_hz: 10.0
     # 1 = j turns left (default ROS convention)
     # -1 = j turns right (flip if steering is reversed)
-    steering_sign: 1
+    steering_sign: -1

@@ -1,6 +1,6 @@
 import numpy as np
 import rclpy
-from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 
@@ -10,36 +10,20 @@ _DEFAULT_HEIGHT = 240
 _DEFAULT_RATE_HZ = 15.0
 _DEFAULT_FRAME_ID = "camera_link"
 
-# Checkerboard square size (pixels) used in sim mode.
 _SIM_SQUARE_PX = 40
 
 
-class CameraNode(LifecycleNode):
-    """Lifecycle driver node for the Pi Camera (CSI, via picamera2).
+class CameraNode(Node):
+    """Camera driver node for the Pi Camera (CSI, via picamera2).
 
     Publishes:
-        /rover/camera/image_raw   (sensor_msgs/Image)       — raw RGB frames
-        /rover/camera/camera_info (sensor_msgs/CameraInfo)  — intrinsics (zeros until calibrated)
-
-    Parameters:
-        use_sim        (bool,  default False)  — publish synthetic checkerboard frames
-        publish_rate_hz (float, default 15.0)  — capture rate
-        frame_width    (int,   default 640)
-        frame_height   (int,   default 480)
-        frame_id       (str,   default "camera_link")
+        /rover/camera/image_raw   (sensor_msgs/Image)
+        /rover/camera/camera_info (sensor_msgs/CameraInfo)
     """
 
     def __init__(self) -> None:
         super().__init__("camera_node")
-        self._timer = None
-        self._camera = None
-        self._sim_frame: np.ndarray | None = None
 
-    # ------------------------------------------------------------------
-    # Lifecycle callbacks
-    # ------------------------------------------------------------------
-
-    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.declare_parameter("use_sim", False)
         self.declare_parameter("publish_rate_hz", _DEFAULT_RATE_HZ)
         self.declare_parameter("frame_width", _DEFAULT_WIDTH)
@@ -59,73 +43,37 @@ class CameraNode(LifecycleNode):
             CameraInfo, "/rover/camera/camera_info", qos_profile_sensor_data
         )
 
+        self._camera = None
+        self._sim_frame: np.ndarray | None = None
+
         if self._use_sim:
             self._sim_frame = self._make_checkerboard()
+            self.get_logger().info(
+                f"Camera node ready (sim), {self._width}x{self._height} @ {self._rate_hz} Hz"
+            )
         else:
-            if not self._init_hardware():
-                return TransitionCallbackReturn.FAILURE
+            self._init_hardware()
 
-        self.get_logger().info(
-            f"Configured — mode={'sim' if self._use_sim else 'hardware'}, "
-            f"resolution={self._width}x{self._height}, rate={self._rate_hz} Hz"
-        )
-        return TransitionCallbackReturn.SUCCESS
+        self.create_timer(1.0 / self._rate_hz, self._publish_frame)
 
-    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        if not self._use_sim and self._camera is not None:
-            self._camera.start()
-        self._timer = self.create_timer(1.0 / self._rate_hz, self._publish_frame)
-        self.get_logger().info("Activated — publishing camera frames.")
-        return TransitionCallbackReturn.SUCCESS
-
-    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        if not self._use_sim and self._camera is not None:
-            self._camera.stop()
-        self.get_logger().info("Deactivated.")
-        return TransitionCallbackReturn.SUCCESS
-
-    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
-        if self._camera is not None:
-            self._camera.close()
-            self._camera = None
-        self._sim_frame = None
-        self.get_logger().info("Cleaned up.")
-        return TransitionCallbackReturn.SUCCESS
-
-    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
-        if self._camera is not None:
-            self._camera.close()
-            self._camera = None
-        return TransitionCallbackReturn.SUCCESS
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _init_hardware(self) -> bool:
+    def _init_hardware(self) -> None:
         try:
             from picamera2 import Picamera2  # type: ignore
         except ImportError as exc:
-            msg = (
-                "picamera2 libcamera bindings not found — see README.md."
-                if "libcamera" in str(exc)
-                else "picamera2 not installed. Use use_sim:=true on the dev machine."
-            )
-            self.get_logger().error(msg)
-            return False
+            self.get_logger().error(f"picamera2 not available: {exc}")
+            return
         try:
             self._camera = Picamera2()
             cfg = self._camera.create_video_configuration(
                 main={"format": "RGB888", "size": (self._width, self._height)}
             )
             self._camera.configure(cfg)
+            self._camera.start()
+            self.get_logger().info(
+                f"Camera ready — {self._width}x{self._height} @ {self._rate_hz} Hz"
+            )
         except Exception as exc:
             self.get_logger().error(f"Failed to initialise Pi Camera: {exc}")
-            return False
-        return True
 
     def _publish_frame(self) -> None:
         frame = self._capture_sim() if self._use_sim else self._capture_hardware()
@@ -153,6 +101,8 @@ class CameraNode(LifecycleNode):
         self._pub_info.publish(info_msg)
 
     def _capture_hardware(self) -> np.ndarray | None:
+        if self._camera is None:
+            return None
         try:
             return self._camera.capture_array()
         except Exception as exc:
@@ -163,7 +113,6 @@ class CameraNode(LifecycleNode):
         return self._sim_frame
 
     def _make_checkerboard(self) -> np.ndarray:
-        """Generate a static grey/white checkerboard for sim mode."""
         xs = np.arange(self._width)
         ys = np.arange(self._height)
         xx, yy = np.meshgrid(xs, ys)
@@ -171,6 +120,12 @@ class CameraNode(LifecycleNode):
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
         frame[mask] = [200, 200, 200]
         return frame
+
+    def destroy_node(self) -> None:
+        if self._camera is not None:
+            self._camera.stop()
+            self._camera.close()
+        super().destroy_node()
 
 
 def main(args: list[str] | None = None) -> None:

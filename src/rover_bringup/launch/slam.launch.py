@@ -34,18 +34,6 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{"use_sim": use_sim}],
         ),
 
-        # Activate lifecycle nodes (camera only — ultrasonic handled by drive_node)
-        Node(
-            package="nav2_lifecycle_manager",
-            executable="lifecycle_manager",
-            name="lifecycle_manager_slam",
-            parameters=[{
-                "autostart": True,
-                "node_names": ["camera_node"],
-                "bond_timeout": 0.0,
-            }],
-        ),
-
         # Convert ultrasonic Range → LaserScan for slam_toolbox
         Node(
             package="rover_navigation",
