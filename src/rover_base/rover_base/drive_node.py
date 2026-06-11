@@ -22,6 +22,7 @@ class DriveNode(Node):
         self.declare_parameter("max_steering_angle", 30.0)
         self.declare_parameter("cmd_timeout", 0.5)
         self.declare_parameter("ultrasonic_rate_hz", 10.0)
+        self.declare_parameter("steering_sign", -1)
 
         self._use_sim = self.get_parameter("use_sim").value
         self._max_linear = self.get_parameter("max_linear_vel").value
@@ -30,6 +31,7 @@ class DriveNode(Node):
         self._max_angle = self.get_parameter("max_steering_angle").value
         self._cmd_timeout = self.get_parameter("cmd_timeout").value
         self._ultrasonic_rate = self.get_parameter("ultrasonic_rate_hz").value
+        self._steering_sign = self.get_parameter("steering_sign").value
 
         if not self._use_sim:
             from picarx import Picarx  # type: ignore[import]
@@ -59,7 +61,7 @@ class DriveNode(Node):
         )
         angle = max(-self._max_angle,
                     min(self._max_angle,
-                        -angular_z / self._max_angular * self._max_angle))
+                        self._steering_sign * angular_z / self._max_angular * self._max_angle))
 
         if self._use_sim:
             self.get_logger().debug(f"[sim] speed={speed} angle={angle:.1f}°")
