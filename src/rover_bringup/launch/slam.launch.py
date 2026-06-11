@@ -31,7 +31,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_base",
             executable="camera_node",
             name="camera_node",
-            parameters=[{"use_sim": use_sim}],
+            parameters=[{"use_sim": use_sim, "frame_width": 640, "frame_height": 480}],
         ),
 
         # Convert ultrasonic Range → LaserScan for slam_toolbox
