@@ -47,7 +47,8 @@ else
   echo "rover_slam unchanged — skipping C++ build."
 fi
 
-# Python packages are always fast
+# Python packages: clean build dir first so stale copies don't shadow src/
+rm -rf build/rover_base build/rover_navigation build/rover_bringup build/rover_control build/rover_perception
 colcon build --symlink-install --packages-skip rover_slam
 
 echo "Build complete."

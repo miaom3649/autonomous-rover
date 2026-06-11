@@ -18,6 +18,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ── 0. Kill any stale processes from a previous session ───────────────────
+echo "Cleaning up stale processes..."
+pkill -f "drive_node"          2>/dev/null || true
+pkill -f "orb_slam3_node"      2>/dev/null || true
+pkill -f "async_slam_toolbox"  2>/dev/null || true
+pkill -f "camera_node"         2>/dev/null || true
+sleep 2
+
 # ── 1. Start SLAM ──────────────────────────────────────────────────────────
 echo "Starting SLAM stack..."
 ros2 launch rover_bringup slam.launch.py &
