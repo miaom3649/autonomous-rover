@@ -42,6 +42,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{
                 "autostart": True,
                 "node_names": ["camera_node"],
+                "bond_timeout": 0.0,
             }],
         ),
 
