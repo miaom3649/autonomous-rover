@@ -58,8 +58,6 @@ class CameraNode(Node):
             )
         else:
             self._init_hardware()
-            capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-            capture_thread.start()
 
         self.create_timer(1.0 / self._rate_hz, self._publish_frame)
 
@@ -71,24 +69,28 @@ class CameraNode(Node):
             return
         try:
             self._camera = Picamera2()
-            # FrameDurationLimits locks frame rate: value = 1/fps * 1e6 µs.
-            # 15 fps → 66666 µs; this eliminates the 400ms gap spikes that
-            # break ORB-SLAM3's constant-velocity motion model.
-            # buffer_count=4 reduces timing jitter from picamera2 dropped frames.
-            target_duration_us = int(1_000_000 / self._rate_hz)
+
+            # FrameDurationLimits locks the camera to exactly self._rate_hz fps.
+            # Formula: duration_us = 1_000_000 / fps
+            target_us = int(1_000_000 / self._rate_hz)
             cfg = self._camera.create_video_configuration(
                 main={"format": "RGB888", "size": (self._width, self._height)},
-                controls={"FrameDurationLimits": (target_duration_us, target_duration_us)},
+                controls={"FrameDurationLimits": (target_us, target_us)},
                 buffer_count=4,
             )
             self._camera.configure(cfg)
+
+            # pre_callback runs in libcamera's C++ thread — it only acquires the
+            # Python GIL briefly to copy the array, so the ROS2 spin loop is free
+            # to fire timer callbacks between frames at the full target rate.
+            self._camera.pre_callback = self._on_camera_frame
             self._camera.start()
-            # Lock to a short shutter (8 ms) to prevent motion blur.
-            import time as _time
-            _time.sleep(1.0)  # let AEC settle before locking
+
+            # Wait for AEC to settle, then lock exposure to prevent motion blur.
+            time.sleep(1.0)
             self._camera.set_controls({
                 "AeEnable": False,
-                "ExposureTime": 8000,   # 8 ms — freezes motion at rover speeds
+                "ExposureTime": 8000,   # 8 ms — short enough to freeze rover motion
                 "AnalogueGain": 8.0,
             })
             self.get_logger().info(
@@ -97,6 +99,15 @@ class CameraNode(Node):
             )
         except Exception as exc:
             self.get_logger().error(f"Failed to initialise Pi Camera: {exc}")
+
+    def _on_camera_frame(self, request) -> None:
+        """picamera2 pre_callback: called by libcamera's thread each time a frame arrives."""
+        try:
+            frame = request.make_array("main")
+            with self._frame_lock:
+                self._latest_frame = frame
+        except Exception:
+            pass
 
     def _publish_frame(self) -> None:
         frame = self._capture_sim() if self._use_sim else self._capture_hardware()
@@ -122,18 +133,6 @@ class CameraNode(Node):
         info_msg.width = self._width
         info_msg.height = self._height
         self._pub_info.publish(info_msg)
-
-    def _capture_loop(self) -> None:
-        """Background thread: grab frames continuously so the timer callback never blocks."""
-        while rclpy.ok():
-            if self._camera is None:
-                return
-            try:
-                frame = self._camera.capture_array()
-                with self._frame_lock:
-                    self._latest_frame = frame
-            except Exception as exc:
-                self.get_logger().warning(f"Frame capture failed: {exc}")
 
     def _capture_hardware(self) -> np.ndarray | None:
         with self._frame_lock:
