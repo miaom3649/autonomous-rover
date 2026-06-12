@@ -182,6 +182,8 @@ private:
             {
                 std::lock_guard<std::mutex> lk(frame_mutex_);
                 latest_frame_ = std::move(rgb);
+                latest_stamp_ = get_clock()->now();
+                ++frame_seq_;
             }
             munmap(mem, plane.length);
         }
@@ -196,15 +198,17 @@ private:
     void publish_frame()
     {
         cv::Mat frame;
+        rclcpp::Time stamp;
         if (use_sim_) {
             frame = make_checkerboard();
+            stamp = get_clock()->now();
         } else {
             std::lock_guard<std::mutex> lk(frame_mutex_);
-            if (latest_frame_.empty()) return;
+            if (latest_frame_.empty() || frame_seq_ == last_pub_seq_) return;
             frame = latest_frame_.clone();
+            stamp = latest_stamp_;
+            last_pub_seq_ = frame_seq_;
         }
-
-        auto stamp = get_clock()->now();
 
         sensor_msgs::msg::Image img;
         img.header.stamp    = stamp;
@@ -249,6 +253,9 @@ private:
     std::vector<std::unique_ptr<Request>> requests_;
 
     cv::Mat latest_frame_;
+    rclcpp::Time latest_stamp_{0, 0, RCL_ROS_TIME};
+    uint64_t frame_seq_{0};
+    uint64_t last_pub_seq_{0};
     std::mutex frame_mutex_;
     std::atomic<bool> running_{true};
 
