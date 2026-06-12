@@ -6,18 +6,18 @@
 #--------------------------------------------------------------------------------------------
 Camera.type: "PinHole"
 
-Camera.fx: 642.06196017282070
-Camera.fy: 641.0044967964596
-Camera.cx: 312.77763075448672
-Camera.cy: 232.04059994085296
+Camera.fx: 321.03098008641035
+Camera.fy: 320.50224839822980
+Camera.cx: 156.38881537724336
+Camera.cy: 116.02029997042648
 
 Camera.k1:  0.34740589756056456
 Camera.k2: -2.328076843275508
 Camera.p1: -0.006620102436670903
 Camera.p2: -0.0031368694154414716
 
-Camera.width:  640
-Camera.height: 480
+Camera.width:  320
+Camera.height: 240
 Camera.fps:    10
 Camera.RGB:    1
 

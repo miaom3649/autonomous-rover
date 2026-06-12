@@ -1,3 +1,5 @@
+import threading
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -45,6 +47,8 @@ class CameraNode(Node):
 
         self._camera = None
         self._sim_frame: np.ndarray | None = None
+        self._latest_frame: np.ndarray | None = None
+        self._frame_lock = threading.Lock()
 
         if self._use_sim:
             self._sim_frame = self._make_checkerboard()
@@ -53,6 +57,8 @@ class CameraNode(Node):
             )
         else:
             self._init_hardware()
+            capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            capture_thread.start()
 
         self.create_timer(1.0 / self._rate_hz, self._publish_frame)
 
@@ -100,14 +106,21 @@ class CameraNode(Node):
         info_msg.height = self._height
         self._pub_info.publish(info_msg)
 
+    def _capture_loop(self) -> None:
+        """Background thread: grab frames continuously so the timer callback never blocks."""
+        while rclpy.ok():
+            if self._camera is None:
+                return
+            try:
+                frame = self._camera.capture_array()
+                with self._frame_lock:
+                    self._latest_frame = frame
+            except Exception as exc:
+                self.get_logger().warning(f"Frame capture failed: {exc}")
+
     def _capture_hardware(self) -> np.ndarray | None:
-        if self._camera is None:
-            return None
-        try:
-            return self._camera.capture_array()
-        except Exception as exc:
-            self.get_logger().warning(f"Frame capture failed: {exc}")
-            return None
+        with self._frame_lock:
+            return self._latest_frame
 
     def _capture_sim(self) -> np.ndarray:
         return self._sim_frame
