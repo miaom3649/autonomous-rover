@@ -1,24 +1,23 @@
 #!/bin/bash
 # Run on the Pi to do a full mapping session.
 # Usage: bash scripts/mapping_session.sh
-set -eo pipefail
+# Requires tmux (sudo apt install tmux).
+
+SESSION="slam"
+LOG_FILE="/tmp/slam.log"
+
+if ! command -v tmux &>/dev/null; then
+    echo "tmux not found — install with: sudo apt install tmux"
+    exit 1
+fi
 
 source /opt/ros/humble/setup.bash
 source "$HOME/dev/autonomous-rover/install/setup.bash"
 
-SLAM_PID=""
-MONITOR_PID=""
+# Kill any leftover tmux session from a previous run
+tmux kill-session -t "$SESSION" 2>/dev/null || true
 
-cleanup() {
-    echo ""
-    echo "Stopping..."
-    [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
-    [ -n "$SLAM_PID" ]   && kill "$SLAM_PID"    2>/dev/null || true
-    wait 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# ── 0. Kill any stale processes from a previous session ───────────────────
+# Kill stale ROS processes
 echo "Cleaning up stale processes..."
 pkill -f "drive_node"          2>/dev/null || true
 pkill -f "orb_slam3_node"      2>/dev/null || true
@@ -26,36 +25,32 @@ pkill -f "async_slam_toolbox"  2>/dev/null || true
 pkill -f "camera_node"         2>/dev/null || true
 sleep 2
 
-# ── 1. Start SLAM ──────────────────────────────────────────────────────────
-echo "Starting SLAM stack..."
-ros2 launch rover_bringup slam.launch.py &
-SLAM_PID=$!
-sleep 6  # wait for nodes to come up
+# ── Build the tmux session ────────────────────────────────────────────────────
+# Pane 0 (top ~70%): SLAM launch output filtered to key events
+# Pane 1 (bottom ~30%): teleop + SLAM initialised banner
 
-# ── 2. Background monitor — prints when SLAM initialises ──────────────────
-(
-    while ! timeout 3 ros2 topic echo --once /orb_slam3/pose &>/dev/null; do
-        sleep 2
-    done
-    echo ""
-    echo "========================================="
-    echo "  SLAM INITIALISED — keep driving to map"
-    echo "========================================="
-    echo ""
-) &
-MONITOR_PID=$!
+SETUP="source /opt/ros/humble/setup.bash && source $HOME/dev/autonomous-rover/install/setup.bash"
 
-# ── 3. Teleop in foreground (needs real TTY) ───────────────────────────────
-echo ""
-echo "Move the rover to initialise SLAM, then keep driving to map the area."
-echo "Press Ctrl-C when done mapping."
-echo ""
-ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-    --ros-args --remap cmd_vel:=/rover/cmd_vel
+# Pane 0: start SLAM, tee to log file, filter for key events
+SLAM_CMD="$SETUP && ros2 launch rover_bringup slam.launch.py 2>&1 | tee $LOG_FILE | grep --line-buffered -iE 'map created|match|fail|track|reset|ready|error|reseting|initializ'"
 
-# ── 4. Save map via slam_toolbox service (more reliable than map_saver_cli) ──
-echo "Saving map..."
-mkdir -p "$HOME/maps"
-ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
-    "{name: {data: '$HOME/maps/room'}}"
-echo "Done — map saved to ~/maps/room.pgm and ~/maps/room.yaml"
+# Pane 1: wait for nodes, show banner on init, then run teleop, then save map
+MONITOR="(while ! timeout 3 ros2 topic echo --once /orb_slam3/pose &>/dev/null; do sleep 2; done; printf '\n\e[1;32m=========================================\n  SLAM INITIALISED — keep driving to map\n=========================================\e[0m\n\n') &"
+TELEOP="ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/rover/cmd_vel"
+SAVE='echo ""; echo "Saving map..."; mkdir -p ~/maps && ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap "{name: {data: \"$HOME/maps/room\"}}" && echo "Map saved to ~/maps/room.pgm"'
+
+TELEOP_CMD="$SETUP && sleep 8 && $MONITOR $TELEOP; $SAVE"
+
+tmux new-session -d -s "$SESSION" -x "$(tput cols 2>/dev/null || echo 200)" -y "$(tput lines 2>/dev/null || echo 50)"
+tmux send-keys -t "$SESSION:0.0" "$SLAM_CMD" Enter
+tmux split-window -v -t "$SESSION:0" -p 32
+tmux send-keys -t "$SESSION:0.1" "$TELEOP_CMD" Enter
+tmux select-pane -t "$SESSION:0.1"  # start with focus on teleop pane
+
+tmux attach -t "$SESSION"
+
+# After the user detaches / closes tmux, kill everything
+pkill -f "drive_node"          2>/dev/null || true
+pkill -f "orb_slam3_node"      2>/dev/null || true
+pkill -f "async_slam_toolbox"  2>/dev/null || true
+pkill -f "camera_node"         2>/dev/null || true
