@@ -28,7 +28,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[base_params, {"use_sim": use_sim}],
         ),
         Node(
-            package="rover_base",
+            package="rover_camera",
             executable="camera_node",
             name="camera_node",
             parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
