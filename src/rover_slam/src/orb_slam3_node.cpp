@@ -55,7 +55,13 @@ private:
         }
 
         const double ts = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
-        const Sophus::SE3f pose = slam_->TrackMonocular(cv_ptr->image, ts);
+        Sophus::SE3f pose;
+        try {
+            pose = slam_->TrackMonocular(cv_ptr->image, ts);
+        } catch (const std::exception & e) {
+            RCLCPP_ERROR(get_logger(), "TrackMonocular threw: %s", e.what());
+            return;
+        }
 
         // Tracking::OK == 2
         if (slam_->GetTrackingState() != 2) {

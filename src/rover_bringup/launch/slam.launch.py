@@ -42,10 +42,13 @@ def generate_launch_description() -> LaunchDescription:
         ),
 
         # ORB-SLAM3 for camera-based localization
+        # output='screen' is required so ORB-SLAM3's internal std::cout tracking
+        # messages appear in the launch output instead of going only to ~/.ros/log/
         Node(
             package="rover_slam",
             executable="orb_slam3_node",
             name="orb_slam3_node",
+            output="screen",
             parameters=[{
                 "vocab_path": vocab_path,
                 "settings_path": settings_path,
