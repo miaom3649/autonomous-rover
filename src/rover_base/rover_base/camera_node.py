@@ -76,8 +76,20 @@ class CameraNode(Node):
             )
             self._camera.configure(cfg)
             self._camera.start()
+            # Lock to a short shutter (8 ms) to prevent motion blur.
+            # ORB descriptors computed on blurred frames don't match across
+            # frames, causing "Fail to track local map!" even with 800+ features.
+            # AnalogueGain compensates for the reduced exposure brightness.
+            import time as _time
+            _time.sleep(1.0)  # let AEC settle before locking
+            self._camera.set_controls({
+                "AeEnable": False,
+                "ExposureTime": 8000,   # 8 ms — freezes motion at rover speeds
+                "AnalogueGain": 8.0,
+            })
             self.get_logger().info(
-                f"Camera ready — {self._width}x{self._height} @ {self._rate_hz} Hz"
+                f"Camera ready — {self._width}x{self._height} @ {self._rate_hz} Hz, "
+                "exposure locked 8ms gain 8x"
             )
         except Exception as exc:
             self.get_logger().error(f"Failed to initialise Pi Camera: {exc}")
