@@ -18,13 +18,13 @@ Camera.p2: -0.0031368694154414716
 
 Camera.width:  320
 Camera.height: 240
-Camera.fps:    10
+Camera.fps:    7
 Camera.RGB:    1
 
 #--------------------------------------------------------------------------------------------
 # ORB extractor — reduced feature count for Pi 4 CPU budget
 #--------------------------------------------------------------------------------------------
-ORBextractor.nFeatures:   500
+ORBextractor.nFeatures:   1000
 ORBextractor.scaleFactor: 1.2
 ORBextractor.nLevels:     8
 ORBextractor.iniThFAST:   5
