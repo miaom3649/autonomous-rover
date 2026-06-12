@@ -48,7 +48,7 @@ else
 fi
 
 # Python packages: clean build dir first so stale copies don't shadow src/
-rm -rf build/rover_base build/rover_navigation build/rover_bringup build/rover_control build/rover_perception
+rm -rf build/rover_base build/rover_camera build/rover_navigation build/rover_bringup build/rover_control build/rover_perception
 colcon build --symlink-install --packages-skip rover_slam
 
 echo "Build complete."
