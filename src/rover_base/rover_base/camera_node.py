@@ -71,15 +71,19 @@ class CameraNode(Node):
             return
         try:
             self._camera = Picamera2()
+            # FrameDurationLimits locks frame rate: value = 1/fps * 1e6 µs.
+            # 15 fps → 66666 µs; this eliminates the 400ms gap spikes that
+            # break ORB-SLAM3's constant-velocity motion model.
+            # buffer_count=4 reduces timing jitter from picamera2 dropped frames.
+            target_duration_us = int(1_000_000 / self._rate_hz)
             cfg = self._camera.create_video_configuration(
-                main={"format": "RGB888", "size": (self._width, self._height)}
+                main={"format": "RGB888", "size": (self._width, self._height)},
+                controls={"FrameDurationLimits": (target_duration_us, target_duration_us)},
+                buffer_count=4,
             )
             self._camera.configure(cfg)
             self._camera.start()
             # Lock to a short shutter (8 ms) to prevent motion blur.
-            # ORB descriptors computed on blurred frames don't match across
-            # frames, causing "Fail to track local map!" even with 800+ features.
-            # AnalogueGain compensates for the reduced exposure brightness.
             import time as _time
             _time.sleep(1.0)  # let AEC settle before locking
             self._camera.set_controls({
