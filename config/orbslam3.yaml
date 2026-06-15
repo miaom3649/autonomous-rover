@@ -11,10 +11,10 @@ Camera.fy: 320.50224839822980
 Camera.cx: 156.38881537724336
 Camera.cy: 116.02029997042648
 
-Camera.k1:  0.0
-Camera.k2:  0.0
-Camera.p1:  0.0
-Camera.p2:  0.0
+Camera.k1:  0.34740589756056456
+Camera.k2: -2.328076843275508
+Camera.p1: -0.006620102436670903
+Camera.p2: -0.0031368694154414716
 
 Camera.width:  320
 Camera.height: 240
