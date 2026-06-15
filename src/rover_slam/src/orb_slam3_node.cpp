@@ -39,6 +39,7 @@ public:
     ~OrbSlam3Node()
     {
         if (slam_) {
+            sub_.reset();  // stop feeding frames before shutdown to avoid race in tracking thread
             slam_->Shutdown();
         }
     }
