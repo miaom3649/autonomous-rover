@@ -39,7 +39,6 @@ public:
     ~OrbSlam3Node()
     {
         if (slam_) {
-            slam_->SaveAtlas(0);
             slam_->Shutdown();
         }
     }
