@@ -4,6 +4,8 @@
 # Camera — PinHole, calibrated at 640x480 and scaled ×0.5 to 320x240
 # RMS reprojection error: 0.7344 px
 #--------------------------------------------------------------------------------------------
+System.SaveAtlasToFile: "/home/konkon/maps/room"
+
 Camera.type: "PinHole"
 
 Camera.fx: 321.03098008641035
