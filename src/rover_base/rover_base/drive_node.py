@@ -114,4 +114,5 @@ def main(args: list[str] | None = None) -> None:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
