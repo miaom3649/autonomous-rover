@@ -1,4 +1,8 @@
 #include <memory>
+#include <csignal>
+#include <cstdio>
+#include <execinfo.h>
+#include <unistd.h>
 
 #include <cv_bridge/cv_bridge.h>
 #include <rclcpp/rclcpp.hpp>
@@ -6,6 +10,16 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
 #include <System.h>
+
+static void sigsegv_handler(int)
+{
+    void * frames[32];
+    int n = backtrace(frames, 32);
+    fprintf(stderr, "\n[orb_slam3_node] SIGSEGV — stack trace:\n");
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    std::signal(SIGSEGV, SIG_DFL);
+    std::raise(SIGSEGV);
+}
 
 class OrbSlam3Node : public rclcpp::Node
 {
@@ -93,6 +107,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+    std::signal(SIGSEGV, sigsegv_handler);
     rclcpp::init(argc, argv);
     rclcpp::spin(std::make_shared<OrbSlam3Node>());
     rclcpp::shutdown();

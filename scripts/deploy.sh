@@ -51,6 +51,8 @@ fi
 rm -rf build/rover_base build/rover_camera build/rover_navigation build/rover_bringup build/rover_control build/rover_perception
 colcon build --symlink-install --packages-skip rover_slam
 
+mkdir -p /home/konkon/maps
+
 echo "Build complete."
 EOF
 
