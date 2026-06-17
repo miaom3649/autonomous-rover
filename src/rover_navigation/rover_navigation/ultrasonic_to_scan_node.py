@@ -19,16 +19,17 @@ class UltrasonicToScanNode(Node):
         self._pub = self.create_publisher(LaserScan, "/scan", qos_profile_sensor_data)
         self.get_logger().info("Ultrasonic → LaserScan bridge ready")
 
+    _N_POINTS = 5  # fan the single reading across the sensor FOV
+
     def _on_range(self, msg: Range) -> None:
         scan = LaserScan()
         scan.header.stamp = msg.header.stamp
         scan.header.frame_id = "base_link"
 
-        # Single beam pointing straight ahead (0 rad).
         half_fov = msg.field_of_view / 2.0
         scan.angle_min = -half_fov
         scan.angle_max = half_fov
-        scan.angle_increment = msg.field_of_view
+        scan.angle_increment = msg.field_of_view / (self._N_POINTS - 1)
         scan.time_increment = 0.0
         scan.scan_time = 0.1
         scan.range_min = msg.min_range
@@ -37,7 +38,7 @@ class UltrasonicToScanNode(Node):
         r = msg.range
         if math.isnan(r) or r < msg.min_range or r > msg.max_range:
             r = float("inf")
-        scan.ranges = [r]
+        scan.ranges = [r] * self._N_POINTS
 
         self._pub.publish(scan)
 
