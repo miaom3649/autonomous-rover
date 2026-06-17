@@ -26,6 +26,8 @@ _save_and_exit() {
     # Now shut down the launch process group
     kill -- -"$LAUNCH_PID" 2>/dev/null || kill "$LAUNCH_PID" 2>/dev/null
     wait "$LAUNCH_PID" 2>/dev/null || true
+    # Give hardware drivers (GPIO, libcamera) time to release resources.
+    sleep 3
 }
 
 trap _save_and_exit SIGINT SIGTERM
