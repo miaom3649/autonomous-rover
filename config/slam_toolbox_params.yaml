@@ -23,7 +23,7 @@ slam_toolbox:
     do_loop_closing: false
 
     # Serialization (for map saving)
-    map_file_name: ""
+    map_file_name: "/home/konkon/maps/room"
     map_start_pose: [0.0, 0.0, 0.0]
     map_start_at_dock: true
 
