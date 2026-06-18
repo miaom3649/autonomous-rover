@@ -8,24 +8,16 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     use_sim = LaunchConfiguration("use_sim")
-    map_file = LaunchConfiguration("map_file")
 
     home = os.path.expanduser("~")
     vocab_path = os.path.join(home, "ORB_SLAM3", "Vocabulary", "ORBvoc.txt")
     settings_path = os.path.join(home, "dev", "autonomous-rover", "config", "orbslam3.yaml")
     base_params = os.path.join(home, "dev", "autonomous-rover", "config", "base_params.yaml")
     nav2_params = os.path.join(home, "dev", "autonomous-rover", "config", "nav2_params.yaml")
-    slam_toolbox_params = os.path.join(
-        home, "dev", "autonomous-rover", "config", "slam_toolbox_params.yaml"
-    )
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim", default_value="false",
                               description="Run in simulation mode (no hardware required)"),
-        DeclareLaunchArgument(
-            "map_file",
-            default_value=os.path.join(home, "maps", "room"),
-            description="Path to serialized slam_toolbox map (without extension)"),
 
         # ── Hardware nodes ────────────────────────────────────────────────────
         Node(
@@ -71,16 +63,12 @@ def generate_launch_description() -> LaunchDescription:
             name="ultrasonic_to_scan_node",
         ),
 
-        # ── slam_toolbox localization: loads saved map, publishes /map + TF ───
+        # ── map→odom: static identity — ORB-SLAM3 is the only position source ──
         Node(
-            package="slam_toolbox",
-            executable="localization_slam_toolbox_node",
-            name="slam_toolbox",
-            parameters=[slam_toolbox_params, {
-                "mode": "localization",
-                "map_file_name": map_file,
-            }],
-            output="screen",
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="map_to_odom_static",
+            arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
         ),
 
         # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
