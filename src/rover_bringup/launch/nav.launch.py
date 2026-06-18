@@ -104,9 +104,9 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[nav2_params],
         ),
         Node(
-            package="nav2_recoveries",
-            executable="recoveries_server",
-            name="recoveries_server",
+            package="nav2_behaviors",
+            executable="behavior_server",
+            name="behavior_server",
             parameters=[nav2_params],
         ),
         Node(
