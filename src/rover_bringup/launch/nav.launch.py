@@ -82,12 +82,20 @@ def generate_launch_description() -> LaunchDescription:
             output="screen",
         ),
 
+        # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
+        Node(
+            package="rover_control",
+            executable="mode_controller_node",
+            name="mode_controller_node",
+        ),
+
         # ── Nav2 stack ────────────────────────────────────────────────────────
         Node(
             package="nav2_controller",
             executable="controller_server",
             name="controller_server",
             parameters=[nav2_params],
+            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
         ),
         Node(
             package="nav2_planner",
