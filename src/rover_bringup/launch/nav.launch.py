@@ -56,6 +56,7 @@ def generate_launch_description() -> LaunchDescription:
                 "vocab_path": vocab_path,
                 "settings_path": settings_path,
             }],
+            output="screen",
         ),
         Node(
             package="rover_navigation",
