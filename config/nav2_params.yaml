@@ -24,7 +24,6 @@ bt_navigator:
       - nav2_round_robin_node_bt_node
       - nav2_transform_available_condition_bt_node
       - nav2_time_expired_condition_bt_node
-      - nav2_path_expiring_timer_condition_bt_node
       - nav2_distance_traveled_condition_bt_node
       - nav2_single_trigger_bt_node
 
@@ -121,13 +120,13 @@ local_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        observation_sources: ultrasonic
-        ultrasonic:
-          topic: /rover/ultrasonic/range
+        observation_sources: scan
+        scan:
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true
-          data_type: Range
+          data_type: LaserScan
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
@@ -155,13 +154,13 @@ global_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        observation_sources: ultrasonic
-        ultrasonic:
-          topic: /rover/ultrasonic/range
+        observation_sources: scan
+        scan:
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true
-          data_type: Range
+          data_type: LaserScan
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
