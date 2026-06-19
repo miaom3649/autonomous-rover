@@ -11,7 +11,6 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (f"share/{package_name}/launch", [
             "launch/teleop.launch.py",
-            "launch/slam.launch.py",
             "launch/nav.launch.py",
         ]),
     ],
