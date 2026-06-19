@@ -143,8 +143,8 @@ private:
 
         ControlList controls(camera_->controls());
         controls.set(controls::AeEnable, false);
-        controls.set(controls::ExposureTime, 4000);      // 4 ms — reduced to cut motion blur
-        controls.set(controls::AnalogueGain, 16.0f);
+        controls.set(controls::ExposureTime, 8000);      // 8 ms
+        controls.set(controls::AnalogueGain, 8.0f);
 
         if (camera_->start(&controls) != 0) {
             RCLCPP_ERROR(get_logger(), "Camera::start() failed");
@@ -158,7 +158,7 @@ private:
             }
         }
 
-        RCLCPP_INFO(get_logger(), "Camera ready: %dx%d @ %.0f fps, exposure 4 ms",
+        RCLCPP_INFO(get_logger(), "Camera ready: %dx%d @ %.0f fps, exposure 8 ms",
             width_, height_, fps_);
         return true;
     }
