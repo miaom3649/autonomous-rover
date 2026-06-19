@@ -90,6 +90,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="behavior_server",
             name="behavior_server",
             parameters=[nav2_params],
+            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
         ),
         Node(
             package="nav2_bt_navigator",
