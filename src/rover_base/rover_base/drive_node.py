@@ -105,12 +105,13 @@ class DriveNode(Node):
     def destroy_node(self) -> None:
         if self._px is not None:
             try:
+                import signal
+                signal.alarm(3)
                 self._px.stop()
+                signal.alarm(0)
             except Exception:
                 pass
             self._px = None
-            import gc
-            gc.collect()
         super().destroy_node()
 
 

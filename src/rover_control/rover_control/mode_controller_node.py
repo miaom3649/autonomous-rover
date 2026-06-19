@@ -67,7 +67,7 @@ class ModeControllerNode(Node):
             self._send_zero()
         elif not msg.data and self._estopped:
             self._estopped = False
-            self.get_logger().info("Emergency stop cleared — mode: {self._mode}")
+            self.get_logger().info(f"Emergency stop cleared — mode: {self._mode}")
 
     def _on_teleop(self, msg: Twist) -> None:
         if self._estopped or self._mode != _MANUAL:
