@@ -18,7 +18,6 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "camera_node = rover_base.camera_node:main",
             "drive_node = rover_base.drive_node:main",
         ],
     },
