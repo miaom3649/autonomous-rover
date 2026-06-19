@@ -1,44 +1,84 @@
 # Hardware diagnostic script — direct SDK access intentional.
 # Not a ROS node. Run on physical hardware only.
 """
-Camera tilt servo calibration script.
+Camera servo calibration — interactive arrow-key control.
 
 Run on the Pi:
     python3 scripts/calibrate_camera_tilt.py
 
-The script steps through tilt angles and waits for you to press Enter
-after visually confirming whether the camera is level. When done, it
-prints the angle to put in drive_node.py.
+  ↑ / ↓  — tilt up / down
+  ← / →  — pan left / right
+  Enter   — confirm and print values for drive_node.py
+  q       — quit without saving
 """
 
+import sys
+import termios
+import tty
+
 from picarx import Picarx  # type: ignore[import]
+
+STEP = 1  # degrees per key press
+LIMIT = 45
+
+
+def read_key() -> str:
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            ch2 = sys.stdin.read(1)
+            ch3 = sys.stdin.read(1)
+            return f"{ch}{ch2}{ch3}"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def clamp(val: int) -> int:
+    return max(-LIMIT, min(LIMIT, val))
 
 
 def main() -> None:
     px = Picarx()
-    px.set_cam_pan_angle(0)
+    tilt = 0
+    pan = 0
+    px.set_cam_tilt_angle(tilt)
+    px.set_cam_pan_angle(pan)
 
-    angles = [-40, -30, -20, -15, -10, -5, 0, 5, 10, 15, 20, 30, 40]
-    chosen: int | None = None
+    print("Camera calibration — use arrow keys to adjust, Enter to save, q to quit.")
+    print(f"  tilt={tilt:+d}°  pan={pan:+d}°  (limit ±{LIMIT}°)")
 
-    print("Camera tilt calibration. Look at the camera and press Enter at each step.")
-    print("Type 'y' + Enter when the camera looks level and forward-facing.\n")
+    while True:
+        key = read_key()
 
-    for angle in angles:
-        px.set_cam_tilt_angle(angle)
-        answer = input(f"  angle={angle:+d}°  — level? [y/Enter to skip]: ").strip().lower()
-        if answer == "y":
-            chosen = angle
+        if key == "\x1b[A":    # up
+            tilt = clamp(tilt + STEP)
+            px.set_cam_tilt_angle(tilt)
+        elif key == "\x1b[B":  # down
+            tilt = clamp(tilt - STEP)
+            px.set_cam_tilt_angle(tilt)
+        elif key == "\x1b[D":  # left
+            pan = clamp(pan - STEP)
+            px.set_cam_pan_angle(pan)
+        elif key == "\x1b[C":  # right
+            pan = clamp(pan + STEP)
+            px.set_cam_pan_angle(pan)
+        elif key in ("\r", "\n"):
             break
+        elif key in ("q", "\x03"):
+            print("\nAborted.")
+            px.set_cam_tilt_angle(0)
+            px.set_cam_pan_angle(0)
+            return
 
-    if chosen is not None:
-        print(f"\nCalibrated tilt angle: {chosen}")
-        print("Update drive_node.py:")
-        print(f"    self._px.set_cam_tilt_angle({chosen})")
-    else:
-        print("\nNo angle selected. Try a finer range or check servo mechanically.")
+        print(f"\r  tilt={tilt:+d}°  pan={pan:+d}°        ", end="", flush=True)
 
-    px.set_cam_tilt_angle(0)
+    print(f"\n\nCalibrated values:")
+    print(f"    self._px.set_cam_tilt_angle({tilt})")
+    print(f"    self._px.set_cam_pan_angle({pan})")
 
 
 if __name__ == "__main__":
