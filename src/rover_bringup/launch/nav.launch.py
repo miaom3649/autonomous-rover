@@ -32,13 +32,6 @@ def generate_launch_description() -> LaunchDescription:
             name="camera_node",
             parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
         ),
-        Node(
-            package="rover_base",
-            executable="ultrasonic_sensor_node",
-            name="ultrasonic_sensor_node",
-            parameters=[base_params, {"use_sim": use_sim}],
-        ),
-
         # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
         Node(
             package="rover_slam",

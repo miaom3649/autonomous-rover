@@ -18,7 +18,6 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "position_estimator_node = rover_navigation.position_estimator_node:main",
             "slam_pose_bridge = rover_navigation.slam_pose_bridge:main",
             "ultrasonic_to_scan_node = rover_navigation.ultrasonic_to_scan_node:main",
         ],
