@@ -37,6 +37,8 @@ class DriveNode(Node):
         if not self._use_sim:
             from picarx import Picarx  # type: ignore[import]
             self._px = Picarx()
+            self._px.set_cam_tilt_angle(0)
+            self._px.set_cam_pan_angle(0)
         else:
             self._px = None
 
