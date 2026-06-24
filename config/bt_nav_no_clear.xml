@@ -16,7 +16,7 @@
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
-        <BackUp backup_dist="0.15" backup_speed="0.025" time_allowance="3.0"/>
+        <BackUp backup_dist="0.05" backup_speed="0.025" time_allowance="30.0"/>
       </ReactiveFallback>
     </RecoveryNode>
   </BehaviorTree>
