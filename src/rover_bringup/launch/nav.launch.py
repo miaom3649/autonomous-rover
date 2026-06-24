@@ -30,7 +30,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_camera",
             executable="camera_node",
             name="camera_node",
-            parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
+            parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240, "settle_delay_s": 0.0}],
         ),
         # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
         Node(
