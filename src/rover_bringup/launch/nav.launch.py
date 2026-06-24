@@ -30,7 +30,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_camera",
             executable="camera_node",
             name="camera_node",
-            parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240, "settle_delay_s": 0.0}],
+            parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
         ),
         # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
         Node(
@@ -69,7 +69,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_navigation",
             executable="stop_and_go_filter_node",
             name="stop_and_go_filter_node",
-            parameters=[{"move_duration": 0.3, "pause_duration": 0.7}],
+            parameters=[{"move_duration": 0.1, "pause_duration": 0.9}],
         ),
 
         # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
