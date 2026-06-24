@@ -42,6 +42,8 @@ def generate_launch_description() -> LaunchDescription:
                 "settings_path": settings_path,
             }],
             output="screen",
+            sigterm_timeout="3",
+            sigkill_timeout="3",
         ),
         Node(
             package="rover_navigation",
