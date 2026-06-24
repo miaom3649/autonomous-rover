@@ -16,6 +16,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -31,17 +32,28 @@ public:
         declare_parameter("frame_height", 240);
         declare_parameter("publish_rate_hz", 15.0);
         declare_parameter("frame_id", std::string("camera_link"));
+        declare_parameter("settle_delay_s", 0.5);
 
-        use_sim_  = get_parameter("use_sim").as_bool();
-        width_    = get_parameter("frame_width").as_int();
-        height_   = get_parameter("frame_height").as_int();
-        fps_      = get_parameter("publish_rate_hz").as_double();
-        frame_id_ = get_parameter("frame_id").as_string();
+        use_sim_       = get_parameter("use_sim").as_bool();
+        width_         = get_parameter("frame_width").as_int();
+        height_        = get_parameter("frame_height").as_int();
+        fps_           = get_parameter("publish_rate_hz").as_double();
+        frame_id_      = get_parameter("frame_id").as_string();
+        settle_delay_  = get_parameter("settle_delay_s").as_double();
+        last_moving_   = get_clock()->now() - rclcpp::Duration::from_seconds(settle_delay_ + 1.0);
 
         pub_image_ = create_publisher<sensor_msgs::msg::Image>(
             "/rover/camera/image_raw", rclcpp::SensorDataQoS());
         pub_info_  = create_publisher<sensor_msgs::msg::CameraInfo>(
             "/rover/camera/camera_info", rclcpp::SensorDataQoS());
+
+        sub_cmd_vel_ = create_subscription<geometry_msgs::msg::Twist>(
+            "/rover/cmd_vel", 10,
+            [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+                if (std::abs(msg->linear.x) > 0.001 || std::abs(msg->angular.z) > 0.001) {
+                    last_moving_ = get_clock()->now();
+                }
+            });
 
         if (!use_sim_) {
             if (!open_camera()) {
@@ -203,6 +215,9 @@ private:
             frame = make_checkerboard();
             stamp = get_clock()->now();
         } else {
+            double since_moving = (get_clock()->now() - last_moving_).seconds();
+            if (since_moving < settle_delay_) return;
+
             std::lock_guard<std::mutex> lk(frame_mutex_);
             if (latest_frame_.empty() || frame_seq_ == last_pub_seq_) return;
             frame = latest_frame_.clone();
@@ -243,6 +258,8 @@ private:
     int width_, height_;
     double fps_;
     std::string frame_id_;
+    double settle_delay_;
+    rclcpp::Time last_moving_;
     PixelFormat pixel_format_;
 
     std::unique_ptr<CameraManager> cm_;
@@ -261,6 +278,7 @@ private:
 
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_info_;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 

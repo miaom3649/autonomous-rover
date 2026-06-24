@@ -64,11 +64,20 @@ def generate_launch_description() -> LaunchDescription:
             arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
         ),
 
+        # ── Stop-and-go filter (gates Nav2 cmd_vel into move/pause bursts) ──
+        Node(
+            package="rover_navigation",
+            executable="stop_and_go_filter_node",
+            name="stop_and_go_filter_node",
+            parameters=[{"move_duration": 0.3, "pause_duration": 0.7}],
+        ),
+
         # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
         Node(
             package="rover_control",
             executable="mode_controller_node",
             name="mode_controller_node",
+            remappings=[("/rover/cmd_vel_nav", "/rover/cmd_vel_nav_gated")],
         ),
 
         # ── Nav2 stack ────────────────────────────────────────────────────────

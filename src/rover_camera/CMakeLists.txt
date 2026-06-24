@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -13,7 +14,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 
 add_executable(camera_node src/camera_node.cpp)
-ament_target_dependencies(camera_node rclcpp sensor_msgs)
+ament_target_dependencies(camera_node rclcpp geometry_msgs sensor_msgs)
 target_include_directories(camera_node PRIVATE
   ${OpenCV_INCLUDE_DIRS}
   ${LIBCAMERA_INCLUDE_DIRS})
