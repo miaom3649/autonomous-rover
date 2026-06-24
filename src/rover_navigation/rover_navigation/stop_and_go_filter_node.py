@@ -30,8 +30,8 @@ class StopAndGoFilterNode(Node):
         self.declare_parameter("move_duration", 0.3)
         self.declare_parameter("pause_duration", 0.7)
 
-        self._move_dur: float = self.get_parameter("move_duration").as_double()
-        self._pause_dur: float = self.get_parameter("pause_duration").as_double()
+        self._move_dur: float = self.get_parameter("move_duration").value
+        self._pause_dur: float = self.get_parameter("pause_duration").value
 
         self._pub = self.create_publisher(Twist, "/rover/cmd_vel_nav_gated", _RELIABLE)
         self.create_subscription(Twist, "/rover/cmd_vel_nav", self._on_cmd, _RELIABLE)
