@@ -26,7 +26,7 @@ Camera.RGB:    1
 #--------------------------------------------------------------------------------------------
 # ORB extractor — reduced feature count for Pi 4 CPU budget
 #--------------------------------------------------------------------------------------------
-ORBextractor.nFeatures:   2000
+ORBextractor.nFeatures:   1000
 ORBextractor.scaleFactor: 1.2
 ORBextractor.nLevels:     8
 ORBextractor.iniThFAST:   5
