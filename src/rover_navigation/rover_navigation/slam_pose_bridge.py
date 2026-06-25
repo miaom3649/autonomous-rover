@@ -1,3 +1,5 @@
+import math
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -5,23 +7,9 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
 
-# ORB-SLAM3 outputs poses in camera frame: z=forward, x=right, y=down.
-# ROS robot frame (base_link):             x=forward, y=left,  z=up.
-#
-# Position mapping:
-#   robot.x =  camera.z   (forward)
-#   robot.y = -camera.x   (left = -right)
-#   robot.z = -camera.y   (up   = -down)
-#
-# The equivalent fixed rotation matrix (camera → robot):
-#   R = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
-# As a unit quaternion (x, y, z, w):
-_Q_FIX = (-0.5, 0.5, -0.5, 0.5)
-_Q_FIX_INV = (0.5, -0.5, 0.5, 0.5)  # conjugate of _Q_FIX
-
 
 def _qmul(q1: tuple, q2: tuple) -> tuple:
-    """Hamilton product of two quaternions expressed as (x, y, z, w)."""
+    """Hamilton product of two quaternions (x, y, z, w)."""
     x1, y1, z1, w1 = q1
     x2, y2, z2, w2 = q2
     return (
@@ -32,31 +20,82 @@ def _qmul(q1: tuple, q2: tuple) -> tuple:
     )
 
 
+def _qinv(q: tuple) -> tuple:
+    """Conjugate (= inverse for unit quaternions)."""
+    return (-q[0], -q[1], -q[2], q[3])
+
+
+def _qrot(q: tuple, v: tuple) -> tuple:
+    """Rotate vector v = (x, y, z) by unit quaternion q. Returns (x', y', z')."""
+    qv = (v[0], v[1], v[2], 0.0)
+    r = _qmul(_qmul(q, qv), _qinv(q))
+    return r[0], r[1], r[2]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coordinate-frame convention
+# ──────────────────────────────────────────────────────────────────────────────
+# ORB-SLAM3 outputs poses in the camera's own frame at initialisation time:
+#   camera.z = optical axis (forward)
+#   camera.x = right
+#   camera.y = down
+#
+# PiCar-X camera servo convention (matches calibrate_camera_tilt.py):
+#   tilt > 0  → camera points UP   (default was +7°)
+#   tilt < 0  → camera points DOWN (set to -25° for floor-facing SLAM)
+#   pan  > 0  → camera turns RIGHT (set to +13°, treated as yaw offset)
+#
+# This node builds a combined rotation quaternion q_fix that transforms
+# from the SLAM world frame into the ROS base_link frame (x=fwd, y=left, z=up).
+# q_fix = q_base ∘ q_tilt, where:
+#   q_base  encodes the base camera→robot reorientation (z→x, -x→y, -y→z)
+#   q_tilt  encodes the servo tilt around the camera x-axis
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Base rotation: camera(z=fwd,x=right,y=down) → robot(x=fwd,y=left,z=up)
+# Rotation matrix R = [[0,0,1],[-1,0,0],[0,-1,0]] → quaternion (x,y,z,w)
+_Q_BASE = (-0.5, 0.5, -0.5, 0.5)
+
+
+def _build_fix(tilt_deg: float) -> tuple:
+    """Return the camera-to-robot quaternion for a given servo tilt angle.
+
+    tilt_deg: PiCar-X tilt in degrees (positive = up, negative = down).
+    """
+    half = math.radians(tilt_deg) / 2.0
+    # Rotation around camera x-axis by tilt_deg.
+    q_tilt = (math.sin(half), 0.0, 0.0, math.cos(half))
+    return _qmul(_Q_BASE, q_tilt)
+
+
 class SlamPoseBridge(Node):
-    """Republish ORB-SLAM3 PoseStamped as nav_msgs/Odometry and broadcast odom→base_link TF.
+    """Convert ORB-SLAM3 PoseStamped → Odometry + odom→base_link TF.
 
-    Converts from ORB-SLAM3 camera frame (z=forward) to ROS robot frame (x=forward)
-    so that Nav2 receives correctly oriented odometry.
+    Accounts for:
+    - ORB-SLAM3 camera frame convention (z=forward, x=right, y=down)
+    - Physical camera servo tilt angle (camera_tilt_deg parameter)
 
-    TF is published at a fixed rate (20 Hz) so Nav2 never loses the base_link frame.
-    Before SLAM initialises, broadcasts identity (rover at origin). After tracking is lost,
-    holds the last known pose rather than dropping TF entirely.
+    TF is broadcast at 20 Hz so Nav2 never loses base_link. Identity is held
+    until SLAM initialises; last known pose is held after tracking loss.
     """
 
     def __init__(self) -> None:
         super().__init__("slam_pose_bridge")
 
+        self.declare_parameter("camera_tilt_deg", -25.0)
+        tilt = self.get_parameter("camera_tilt_deg").as_double()
+
+        self._q_fix = _build_fix(tilt)
+        self._q_fix_inv = _qinv(self._q_fix)
+        self.get_logger().info(f"Camera frame correction: tilt={tilt:+.1f}°")
+
         self._sub = self.create_subscription(
-            PoseStamped,
-            "/orb_slam3/pose",
-            self._on_pose,
-            10,
-        )
+            PoseStamped, "/orb_slam3/pose", self._on_pose, 10)
         self._pub = self.create_publisher(Odometry, "/rover/odom", 10)
         self._tf_broadcaster = TransformBroadcaster(self)
 
         self._last_t = self._make_identity()
-        self.create_timer(0.05, self._publish_tf)  # 20 Hz keeps TF buffer fresh
+        self.create_timer(0.05, self._publish_tf)
 
         self.get_logger().info("SLAM pose bridge ready")
 
@@ -68,22 +107,16 @@ class SlamPoseBridge(Node):
         return t
 
     def _on_pose(self, msg: PoseStamped) -> None:
-        # Position: camera frame → robot frame
+        # Rotate position vector from SLAM/camera frame into robot frame.
         cx = msg.pose.position.x
         cy = msg.pose.position.y
         cz = msg.pose.position.z
-        rx = cz
-        ry = -cx
-        rz = -cy
+        rx, ry, rz = _qrot(self._q_fix, (cx, cy, cz))
 
-        # Orientation: q_robot = q_fix * q_slam * q_fix_inv
-        q_slam = (
-            msg.pose.orientation.x,
-            msg.pose.orientation.y,
-            msg.pose.orientation.z,
-            msg.pose.orientation.w,
-        )
-        qx, qy, qz, qw = _qmul(_Q_FIX, _qmul(q_slam, _Q_FIX_INV))
+        # Rotate orientation: q_robot = q_fix * q_slam * q_fix_inv
+        q_slam = (msg.pose.orientation.x, msg.pose.orientation.y,
+                  msg.pose.orientation.z, msg.pose.orientation.w)
+        qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_slam, self._q_fix_inv))
 
         odom = Odometry()
         odom.header = msg.header
