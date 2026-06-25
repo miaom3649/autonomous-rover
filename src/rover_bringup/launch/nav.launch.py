@@ -72,7 +72,13 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_navigation",
             executable="stop_and_go_filter_node",
             name="stop_and_go_filter_node",
-            parameters=[{"move_duration": 0.5, "pause_duration": 0.9}],
+            parameters=[{
+                "move_duration": 0.5,
+                "pause_duration": 0.9,
+                "slam_loss_grace": 2.0,
+                "backup_speed": 0.10,
+                "backup_duration": 1.0,
+            }],
         ),
 
         # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────

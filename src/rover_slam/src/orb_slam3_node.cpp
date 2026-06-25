@@ -9,6 +9,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
@@ -62,6 +63,7 @@ public:
             std::bind(&OrbSlam3Node::on_image, this, std::placeholders::_1));
 
         pub_pose_  = create_publisher<geometry_msgs::msg::PoseStamped>("/orb_slam3/pose", 10);
+        pub_state_ = create_publisher<std_msgs::msg::Int32>("/orb_slam3/state", 10);
         pub_debug_ = create_publisher<sensor_msgs::msg::Image>(
             "/orb_slam3/debug_image", rclcpp::SensorDataQoS());
 
@@ -108,8 +110,18 @@ private:
 
         // Heartbeat every 5 s (75 frames @ 15 fps)
         if (frame_count_ % 75 == 0) {
-            RCLCPP_INFO(get_logger(), "SLAM: state=%s  kps=%zu",
-                state_name(cur_state), tracked_kps.size());
+            long rss_kb = 0;
+            if (FILE * f = std::fopen("/proc/self/status", "r")) {
+                char line[128];
+                while (std::fgets(line, sizeof(line), f)) {
+                    if (std::sscanf(line, "VmRSS: %ld kB", &rss_kb) == 1) break;
+                }
+                std::fclose(f);
+            }
+            RCLCPP_INFO(get_logger(), "SLAM: state=%s  kps=%zu  rss=%ld MB",
+                state_name(cur_state), tracked_kps.size(), rss_kb / 1024);
+            std_msgs::msg::Int32 s; s.data = cur_state;
+            pub_state_->publish(s);
         }
 
         // State transition — log with keypoint count at the moment of change
@@ -118,6 +130,8 @@ private:
                 "SLAM state  %s → %s   kps=%zu  frame=%lu",
                 state_name(prev_state_), state_name(cur_state),
                 tracked_kps.size(), frame_count_);
+            std_msgs::msg::Int32 s; s.data = cur_state;
+            pub_state_->publish(s);
 
             // On tracking loss: save recent frames to /tmp/ for inspection
             if (cur_state == 3 || cur_state == 4) {
@@ -200,6 +214,7 @@ private:
     std::unique_ptr<ORB_SLAM3::System> slam_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_pose_;
+    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_state_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_debug_;
 
     int      prev_state_{-1};

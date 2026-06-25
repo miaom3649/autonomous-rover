@@ -16,6 +16,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -40,7 +41,7 @@ target_include_directories(orb_slam3_node PRIVATE
 )
 
 ament_target_dependencies(orb_slam3_node
-  rclcpp sensor_msgs geometry_msgs cv_bridge)
+  rclcpp std_msgs sensor_msgs geometry_msgs cv_bridge)
 
 target_link_directories(orb_slam3_node PRIVATE
   ${ORB_SLAM3_ROOT_DIR}/lib
