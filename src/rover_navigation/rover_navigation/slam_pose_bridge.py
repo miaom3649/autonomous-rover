@@ -82,7 +82,7 @@ class SlamPoseBridge(Node):
     def __init__(self) -> None:
         super().__init__("slam_pose_bridge")
 
-        self.declare_parameter("camera_tilt_deg", -25.0)
+        self.declare_parameter("camera_tilt_deg", -13.0)
         tilt = self.get_parameter("camera_tilt_deg").as_double()
 
         self._q_fix = _build_fix(tilt)
