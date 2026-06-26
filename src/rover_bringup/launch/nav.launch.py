@@ -49,7 +49,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_navigation",
             executable="slam_pose_bridge",
             name="slam_pose_bridge",
-            parameters=[{"camera_tilt_deg": -13.0}],
+            parameters=[{"camera_tilt_deg": -13.0, "position_scale": 9.6}],
         ),
 
         # ── Ultrasonic → LaserScan ────────────────────────────────────────────
