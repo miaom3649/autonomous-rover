@@ -16,8 +16,9 @@ class _State(enum.Enum):
     IDLE = 0
     MOVING = 1
     PAUSING = 2
-    SLAM_BACKING = 3  # backing up after SLAM loss
-    SLAM_WAITING = 4  # stopped, waiting for SLAM to relocalize
+    SLAM_BACKING = 3   # backing up after SLAM loss
+    SLAM_WAITING = 4   # stopped, waiting for SLAM to relocalize
+    SLAM_STABILIZE = 5  # SLAM OK but holding still to accumulate keyframes
 
 
 class StopAndGoFilterNode(Node):
@@ -37,12 +38,14 @@ class StopAndGoFilterNode(Node):
         self.declare_parameter("slam_loss_grace", 2.0)
         self.declare_parameter("backup_speed", 0.10)
         self.declare_parameter("backup_duration", 1.0)
+        self.declare_parameter("slam_stabilize_duration", 5.0)
 
         self._move_dur: float = self.get_parameter("move_duration").value
         self._pause_dur: float = self.get_parameter("pause_duration").value
         self._slam_loss_grace: float = self.get_parameter("slam_loss_grace").value
         self._backup_speed: float = self.get_parameter("backup_speed").value
         self._backup_dur: float = self.get_parameter("backup_duration").value
+        self._slam_stabilize_dur: float = self.get_parameter("slam_stabilize_duration").value
 
         self._pub = self.create_publisher(Twist, "/rover/cmd_vel_nav_gated", _RELIABLE)
         self.create_subscription(Twist, "/rover/cmd_vel_nav", self._on_cmd, _RELIABLE)
@@ -64,7 +67,8 @@ class StopAndGoFilterNode(Node):
             f"Stop-and-go filter ready — "
             f"move={self._move_dur}s pause={self._pause_dur}s  "
             f"slam_grace={self._slam_loss_grace}s "
-            f"backup={self._backup_dur}s@{self._backup_speed}m/s"
+            f"backup={self._backup_dur}s@{self._backup_speed}m/s "
+            f"stabilize={self._slam_stabilize_dur}s"
         )
 
     def _on_cmd(self, msg: Twist) -> None:
@@ -78,8 +82,11 @@ class StopAndGoFilterNode(Node):
             self._slam_was_ok = True
             self._slam_lost_at = None
             if self._state == _State.SLAM_WAITING:
-                self.get_logger().info("SLAM recovered — resuming navigation")
-                self._state = _State.IDLE
+                self.get_logger().info(
+                    f"SLAM recovered — stabilizing {self._slam_stabilize_dur:.1f}s "
+                    "before resuming navigation"
+                )
+                self._state = _State.SLAM_STABILIZE
                 self._phase_start = self.get_clock().now()
         elif prev == _SLAM_OK and self._slam_state != _SLAM_OK:
             # First non-OK state after being OK — start the grace-period clock
@@ -106,8 +113,10 @@ class StopAndGoFilterNode(Node):
         # SLAM recovery takes priority over normal stop-and-go
         if self._state == _State.SLAM_BACKING:
             if self._slam_state == _SLAM_OK:
-                self.get_logger().info("SLAM recovered during backup — resuming")
-                self._state = _State.IDLE
+                self.get_logger().info(
+                    f"SLAM recovered during backup — stabilizing {self._slam_stabilize_dur:.1f}s"
+                )
+                self._state = _State.SLAM_STABILIZE
                 self._phase_start = self.get_clock().now()
                 self._pub.publish(Twist())
             elif self._elapsed() >= self._backup_dur:
@@ -121,6 +130,20 @@ class StopAndGoFilterNode(Node):
 
         if self._state == _State.SLAM_WAITING:
             # _on_slam_state transitions us out when SLAM returns to OK
+            self._pub.publish(Twist())
+            return
+
+        if self._state == _State.SLAM_STABILIZE:
+            # Hold still while SLAM builds keyframes; resume after stabilize period
+            if self._slam_state != _SLAM_OK:
+                # Lost tracking again during stabilize — back to waiting
+                self.get_logger().warn("SLAM lost during stabilization — returning to wait")
+                self._state = _State.SLAM_WAITING
+                self._phase_start = self.get_clock().now()
+            elif self._elapsed() >= self._slam_stabilize_dur:
+                self.get_logger().info("SLAM stable — resuming navigation")
+                self._state = _State.IDLE
+                self._phase_start = self.get_clock().now()
             self._pub.publish(Twist())
             return
 

@@ -107,16 +107,20 @@ class SlamPoseBridge(Node):
         return t
 
     def _on_pose(self, msg: PoseStamped) -> None:
-        # Rotate position vector from SLAM/camera frame into robot frame.
+        # ORB-SLAM3 returns Tcw (world→camera). Invert to get Twc (camera pose in world).
+        q_cw = (msg.pose.orientation.x, msg.pose.orientation.y,
+                msg.pose.orientation.z, msg.pose.orientation.w)
+        q_wc = _qinv(q_cw)
+
+        # Camera world position: P_world = R_wc * (−t_cw)
         cx = msg.pose.position.x
         cy = msg.pose.position.y
         cz = msg.pose.position.z
-        rx, ry, rz = _qrot(self._q_fix, (cx, cy, cz))
+        pwx, pwy, pwz = _qrot(q_wc, (-cx, -cy, -cz))
 
-        # Rotate orientation: q_robot = q_fix * q_slam * q_fix_inv
-        q_slam = (msg.pose.orientation.x, msg.pose.orientation.y,
-                  msg.pose.orientation.z, msg.pose.orientation.w)
-        qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_slam, self._q_fix_inv))
+        # Transform from SLAM world frame into ROS robot frame.
+        rx, ry, rz = _qrot(self._q_fix, (pwx, pwy, pwz))
+        qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
 
         odom = Odometry()
         odom.header = msg.header

@@ -78,6 +78,7 @@ def generate_launch_description() -> LaunchDescription:
                 "slam_loss_grace": 2.0,
                 "backup_speed": 0.10,
                 "backup_duration": 1.0,
+                "slam_stabilize_duration": 5.0,
             }],
         ),
 
