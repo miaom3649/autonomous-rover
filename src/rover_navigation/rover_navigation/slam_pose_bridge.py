@@ -99,9 +99,11 @@ class SlamPoseBridge(Node):
         self._tf_broadcaster = TransformBroadcaster(self)
 
         self._origin: tuple[float, float, float] | None = None
+        self._cur_pose: tuple[float, float, float] | None = None  # (x, y, yaw_deg)
 
         self._last_t = self._make_identity()
         self.create_timer(0.05, self._publish_tf)
+        self.create_timer(2.0, self._log_pose)
 
         self.get_logger().info("SLAM pose bridge ready")
 
@@ -152,6 +154,9 @@ class SlamPoseBridge(Node):
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
+        yaw_deg = math.degrees(math.atan2(2 * (qw * qz + qx * qy),
+                                           1 - 2 * (qy * qy + qz * qz)))
+        self._cur_pose = (rx, ry, yaw_deg)
         self._pub.publish(odom)
 
         t = TransformStamped()
@@ -169,6 +174,12 @@ class SlamPoseBridge(Node):
     def _publish_tf(self) -> None:
         self._last_t.header.stamp = self.get_clock().now().to_msg()
         self._tf_broadcaster.sendTransform(self._last_t)
+
+    def _log_pose(self) -> None:
+        if self._cur_pose is None:
+            return
+        x, y, yaw = self._cur_pose
+        self.get_logger().info(f"pose  x={x:+.3f}  y={y:+.3f}  yaw={yaw:+.1f}°")
 
 
 def main(args: list[str] | None = None) -> None:
