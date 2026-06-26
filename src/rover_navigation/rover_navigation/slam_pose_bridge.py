@@ -83,11 +83,15 @@ class SlamPoseBridge(Node):
         super().__init__("slam_pose_bridge")
 
         self.declare_parameter("camera_tilt_deg", -13.0)
+        self.declare_parameter("position_scale", 1.0)
         tilt = float(self.get_parameter("camera_tilt_deg").value)
+        self._scale = float(self.get_parameter("position_scale").value)
 
         self._q_fix = _build_fix(tilt)
         self._q_fix_inv = _qinv(self._q_fix)
-        self.get_logger().info(f"Camera frame correction: tilt={tilt:+.1f}°")
+        self.get_logger().info(
+            f"Camera frame correction: tilt={tilt:+.1f}°  scale={self._scale:.3f}"
+        )
 
         self._sub = self.create_subscription(
             PoseStamped, "/orb_slam3/pose", self._on_pose, 10)
@@ -118,8 +122,11 @@ class SlamPoseBridge(Node):
         cz = msg.pose.position.z
         pwx, pwy, pwz = _qrot(q_wc, (-cx, -cy, -cz))
 
-        # Transform from SLAM world frame into ROS robot frame.
+        # Transform from SLAM world frame into ROS robot frame, apply scale.
         rx, ry, rz = _qrot(self._q_fix, (pwx, pwy, pwz))
+        rx *= self._scale
+        ry *= self._scale
+        rz *= self._scale
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
 
         odom = Odometry()
