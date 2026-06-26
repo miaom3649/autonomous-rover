@@ -98,6 +98,8 @@ class SlamPoseBridge(Node):
         self._pub = self.create_publisher(Odometry, "/rover/odom", 10)
         self._tf_broadcaster = TransformBroadcaster(self)
 
+        self._origin: tuple[float, float, float] | None = None
+
         self._last_t = self._make_identity()
         self.create_timer(0.05, self._publish_tf)
 
@@ -128,6 +130,16 @@ class SlamPoseBridge(Node):
         ry *= self._scale
         rz *= self._scale
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
+
+        # Anchor first valid pose as origin so rover always starts at (0, 0).
+        if self._origin is None:
+            self._origin = (rx, ry, rz)
+            self.get_logger().info(
+                f"SLAM origin anchored: atlas offset ({rx:.3f}, {ry:.3f}) removed"
+            )
+        rx -= self._origin[0]
+        ry -= self._origin[1]
+        rz -= self._origin[2]
 
         odom = Odometry()
         odom.header = msg.header
