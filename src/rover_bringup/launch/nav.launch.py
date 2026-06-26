@@ -52,6 +52,13 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{"camera_tilt_deg": -13.0, "position_scale": 9.6}],
         ),
 
+        # ── SLAM initialisation helper (pan sweep until tracking starts) ─────
+        Node(
+            package="rover_navigation",
+            executable="slam_init_helper_node",
+            name="slam_init_helper_node",
+        ),
+
         # ── Ultrasonic → LaserScan ────────────────────────────────────────────
         Node(
             package="rover_navigation",

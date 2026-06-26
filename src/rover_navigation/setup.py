@@ -21,6 +21,7 @@ setup(
             "slam_pose_bridge = rover_navigation.slam_pose_bridge:main",
             "ultrasonic_to_scan_node = rover_navigation.ultrasonic_to_scan_node:main",
             "stop_and_go_filter_node = rover_navigation.stop_and_go_filter_node:main",
+            "slam_init_helper_node = rover_navigation.slam_init_helper_node:main",
         ],
     },
 )

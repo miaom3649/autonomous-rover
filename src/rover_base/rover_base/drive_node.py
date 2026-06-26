@@ -4,6 +4,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Range
+from std_msgs.msg import Float32
 
 
 class DriveNode(Node):
@@ -43,6 +44,7 @@ class DriveNode(Node):
             self._px = None
 
         self._sub = self.create_subscription(Twist, "/rover/cmd_vel", self._on_cmd_vel, 10)
+        self._pan_sub = self.create_subscription(Float32, "/rover/camera/pan", self._on_pan, 10)
         self._range_pub = self.create_publisher(
             Range, "/rover/ultrasonic/range", qos_profile_sensor_data
         )
@@ -51,6 +53,10 @@ class DriveNode(Node):
         self.create_timer(1.0 / self._ultrasonic_rate, self._publish_range)
 
         self.get_logger().info(f"Drive node ready (sim={self._use_sim})")
+
+    def _on_pan(self, msg: Float32) -> None:
+        if self._px is not None:
+            self._px.set_cam_pan_angle(float(msg.data))
 
     def _on_cmd_vel(self, msg: Twist) -> None:
         self._last_cmd = self.get_clock().now()
