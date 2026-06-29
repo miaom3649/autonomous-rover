@@ -5,6 +5,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Int32
 from tf2_ros import TransformBroadcaster
 
 
@@ -99,9 +100,15 @@ class SlamPoseBridge(Node):
         self._tf_broadcaster = TransformBroadcaster(self)
 
         self._origin: tuple[float, float, float] | None = None
+        self._origin_yaw: float = 0.0  # radians; zeroed so initial heading = x+
         self._cur_pose: tuple[float, float, float] | None = None  # (x, y, yaw_deg)
         self._first_ok_ns: float | None = None
-        self._anchor_delay = 3.0  # seconds after first tracking before anchoring origin
+        # 5s: camera physically returns home (<1s) + SLAM absorbs movement (~4s at stop-and-go fps)
+        self._anchor_delay = 5.0
+
+        self._state_sub = self.create_subscription(
+            Int32, "/orb_slam3/state", self._on_state, 10
+        )
 
         self._last_t = self._make_identity()
         self.create_timer(0.05, self._publish_tf)
@@ -115,6 +122,18 @@ class SlamPoseBridge(Node):
         t.child_frame_id = "base_link"
         t.transform.rotation.w = 1.0
         return t
+
+    def _on_state(self, msg: Int32) -> None:
+        if msg.data == 2 and self._first_ok_ns is None:
+            self._first_ok_ns = self.get_clock().now().nanoseconds
+            self.get_logger().info(
+                f"SLAM tracking OK — anchoring origin in {self._anchor_delay:.0f}s"
+            )
+        elif msg.data != 2:
+            # tracking lost — reset so we re-anchor after next recovery
+            if self._origin is not None:
+                pass  # keep existing origin; don't reset after first anchor
+            self._first_ok_ns = None
 
     def _on_pose(self, msg: PoseStamped) -> None:
         # ORB-SLAM3 returns Tcw (world→camera). Invert to get Twc (camera pose in world).
@@ -135,21 +154,36 @@ class SlamPoseBridge(Node):
         rz *= self._scale
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
 
-        # Anchor origin 3 s after first tracking so the camera pan has time to
-        # return home and SLAM has time to settle before we zero the position.
+        # Anchor position AND yaw 5s after SLAM first becomes OK, so the camera
+        # has returned home and SLAM has settled. After anchoring, odom starts at
+        # (0, 0, yaw=0°) regardless of atlas coordinate frame or sweep offset.
         now_ns = self.get_clock().now().nanoseconds
-        if self._first_ok_ns is None:
-            self._first_ok_ns = now_ns
         if self._origin is None:
+            if self._first_ok_ns is None:
+                return
             if (now_ns - self._first_ok_ns) * 1e-9 < self._anchor_delay:
                 return
+            yaw_rad = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
             self._origin = (rx, ry, rz)
+            self._origin_yaw = yaw_rad
             self.get_logger().info(
-                f"SLAM origin anchored: offset ({rx:.3f}, {ry:.3f}) removed"
+                f"SLAM origin anchored: pos ({rx:.3f}, {ry:.3f})  yaw {math.degrees(yaw_rad):+.1f}° → zeroed"
             )
-        rx -= self._origin[0]
-        ry -= self._origin[1]
-        rz -= self._origin[2]
+
+        # Subtract origin position, then rotate so initial heading = x+
+        dx = rx - self._origin[0]
+        dy = ry - self._origin[1]
+        dz = rz - self._origin[2]
+        cos_y = math.cos(-self._origin_yaw)
+        sin_y = math.sin(-self._origin_yaw)
+        rx = dx * cos_y - dy * sin_y
+        ry = dx * sin_y + dy * cos_y
+        rz = dz
+
+        # Remove initial yaw from quaternion
+        half = -self._origin_yaw / 2.0
+        q_corr = (0.0, 0.0, math.sin(half), math.cos(half))
+        qx, qy, qz, qw = _qmul(q_corr, (qx, qy, qz, qw))
 
         odom = Odometry()
         odom.header = msg.header
