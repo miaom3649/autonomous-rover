@@ -100,6 +100,8 @@ class SlamPoseBridge(Node):
 
         self._origin: tuple[float, float, float] | None = None
         self._cur_pose: tuple[float, float, float] | None = None  # (x, y, yaw_deg)
+        self._first_ok_ns: float | None = None
+        self._anchor_delay = 3.0  # seconds after first tracking before anchoring origin
 
         self._last_t = self._make_identity()
         self.create_timer(0.05, self._publish_tf)
@@ -133,11 +135,17 @@ class SlamPoseBridge(Node):
         rz *= self._scale
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
 
-        # Anchor first valid pose as origin so rover always starts at (0, 0).
+        # Anchor origin 3 s after first tracking so the camera pan has time to
+        # return home and SLAM has time to settle before we zero the position.
+        now_ns = self.get_clock().now().nanoseconds
+        if self._first_ok_ns is None:
+            self._first_ok_ns = now_ns
         if self._origin is None:
+            if (now_ns - self._first_ok_ns) * 1e-9 < self._anchor_delay:
+                return
             self._origin = (rx, ry, rz)
             self.get_logger().info(
-                f"SLAM origin anchored: atlas offset ({rx:.3f}, {ry:.3f}) removed"
+                f"SLAM origin anchored: offset ({rx:.3f}, {ry:.3f}) removed"
             )
         rx -= self._origin[0]
         ry -= self._origin[1]
