@@ -49,10 +49,16 @@ async def infer_depth(request: Request) -> Response:
     result = _pipe(pil_img)
     dt_ms = (time.perf_counter() - t0) * 1000
 
+    print(f"[DEBUG] result keys: {list(result.keys())}")
     # result["depth"] is an 8-bit normalized visualization image — not metric.
     # result["predicted_depth"] is the real metric tensor but at the model's
     # native output resolution, so resize it back to the input image size.
     predicted = result["predicted_depth"]
+    print(f"[DEBUG] predicted_depth: type={type(predicted).__name__}  "
+          f"shape={tuple(predicted.shape)}  dtype={predicted.dtype}  "
+          f"device={predicted.device}  "
+          f"min={predicted.min().item():.6f}  max={predicted.max().item():.6f}  "
+          f"mean={predicted.mean().item():.6f}")
     while predicted.dim() < 4:
         predicted = predicted.unsqueeze(0)
     w, h = pil_img.size
