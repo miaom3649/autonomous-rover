@@ -18,6 +18,8 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument("use_sim", default_value="false",
                               description="Run in simulation mode (no hardware required)"),
+        DeclareLaunchArgument("depth_server_url", default_value="http://192.168.1.151:8765/depth",
+                              description="URL of the Windows depth inference server"),
 
         # ── Hardware nodes ────────────────────────────────────────────────────
         Node(
@@ -32,6 +34,19 @@ def generate_launch_description() -> LaunchDescription:
             name="camera_node",
             parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
         ),
+        # ── Depth bridge (grabs frames at stops, fetches metric depth from Windows GPU) ──
+        Node(
+            package="rover_navigation",
+            executable="depth_bridge_node",
+            name="depth_bridge_node",
+            parameters=[{
+                "depth_server_url": LaunchConfiguration("depth_server_url"),
+                "settle_delay": 0.5,
+                "request_timeout": 0.8,
+            }],
+            output="screen",
+        ),
+
         # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
         Node(
             package="rover_slam",
