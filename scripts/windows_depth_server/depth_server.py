@@ -49,8 +49,17 @@ async def infer_depth(request: Request) -> Response:
     result = _pipe(pil_img)
     dt_ms = (time.perf_counter() - t0) * 1000
 
-    depth_map: np.ndarray = result["depth"]
-    depth_f32 = np.asarray(depth_map, dtype=np.float32)
+    # result["depth"] is an 8-bit normalized visualization image — not metric.
+    # result["predicted_depth"] is the real metric tensor but at the model's
+    # native output resolution, so resize it back to the input image size.
+    predicted = result["predicted_depth"]
+    while predicted.dim() < 4:
+        predicted = predicted.unsqueeze(0)
+    w, h = pil_img.size
+    resized = torch.nn.functional.interpolate(
+        predicted, size=(h, w), mode="bicubic", align_corners=False
+    )
+    depth_f32 = resized.squeeze().cpu().numpy().astype(np.float32)
 
     h, w = depth_f32.shape
     print(f"depth {w}x{h}  min={depth_f32.min():.2f}m  max={depth_f32.max():.2f}m  {dt_ms:.0f}ms")

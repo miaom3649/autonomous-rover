@@ -1,5 +1,5 @@
 """
-Depth bridge — runs on the dev machine VM.
+Depth bridge — runs on the Raspberry Pi.
 
 Monitors /rover/cmd_vel for stop events, grabs one frame per stop,
 POSTs it to the Windows depth server, and publishes the metric depth
@@ -18,7 +18,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import SensorDataQoS
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 
@@ -30,9 +30,9 @@ class DepthBridgeNode(Node):
         self.declare_parameter("settle_delay", 0.5)
         self.declare_parameter("request_timeout", 0.8)
 
-        self._server_url: str = self.get_parameter("depth_server_url").as_string()
-        self._settle_delay: float = self.get_parameter("settle_delay").as_double()
-        self._timeout: float = self.get_parameter("request_timeout").as_double()
+        self._server_url: str = self.get_parameter("depth_server_url").value
+        self._settle_delay: float = float(self.get_parameter("settle_delay").value)
+        self._timeout: float = float(self.get_parameter("request_timeout").value)
 
         self._bridge = CvBridge()
         self._lock = threading.Lock()
@@ -44,9 +44,11 @@ class DepthBridgeNode(Node):
             Twist, "/rover/cmd_vel", self._on_cmd_vel, 10
         )
         self._sub_img = self.create_subscription(
-            Image, "/rover/camera/image_raw", self._on_image, SensorDataQoS()
+            Image, "/rover/camera/image_raw", self._on_image, qos_profile_sensor_data
         )
-        self._pub_depth = self.create_publisher(Image, "/rover/camera/depth", SensorDataQoS())
+        self._pub_depth = self.create_publisher(
+            Image, "/rover/camera/depth", qos_profile_sensor_data
+        )
 
         self.create_timer(0.1, self._check_stop)
 
