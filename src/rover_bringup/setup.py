@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = "rover_base"
+package_name = "rover_bringup"
 
 setup(
     name=package_name,
@@ -9,16 +9,16 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/launch", [
+            "launch/teleop.launch.py",
+            "launch/nav.launch.py",
+        ]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="Michael Miao",
     maintainer_email="miaom3649@gmail.com",
-    description="Hardware abstraction layer for the autonomous rover.",
+    description="Launch files for the autonomous rover.",
     license="MIT",
-    entry_points={
-        "console_scripts": [
-            "drive_node = rover_base.drive_node:main",
-        ],
-    },
+    entry_points={"console_scripts": []},
 )

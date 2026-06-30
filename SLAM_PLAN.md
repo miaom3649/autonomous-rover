@@ -19,26 +19,30 @@ Goal: enable the rover to build a map of an unknown environment, localize itself
 - Status: **Done**
 
 ### Step 3: Install ORB-SLAM3 on the Pi
-- Build ORB-SLAM3 from source + `ORB-SLAM3-ROS2` wrapper
-- Dependencies: OpenCV, Eigen3, Pangolin
-- Status: **TODO — run on Pi, ~1 hour build time**
+- `libORB_SLAM3.so` compiled successfully at `~/ORB_SLAM3/lib/`
+- Lightweight ROS2 wrapper: `src/rover_slam/` (single .cpp, links libORB_SLAM3.so)
+- Publishes `/orb_slam3/pose` (geometry_msgs/PoseStamped)
+- Build: `colcon build --packages-select rover_slam --parallel-workers 1 --cmake-args -DORB_SLAM3_ROOT_DIR=$HOME/ORB_SLAM3 -DPangolin_DIR=$HOME/Pangolin/build`
+- Status: **Code written — needs colcon build on Pi**
 
 ### Step 4: SLAM Pose Bridge + Config
 - Location: `src/rover_navigation/rover_navigation/slam_pose_bridge.py`
-- Subscribes to raw ORB-SLAM3 pose output, republishes as `nav_msgs/Odometry` on `/rover/odom`
-- Config: `config/orbslam3.yaml` (feature count and other Pi 4 tuning parameters)
-- Status: **TODO**
+- Subscribes to `/orb_slam3/pose`, republishes as `nav_msgs/Odometry` on `/rover/odom`
+- Config: `config/orbslam3.yaml` (500 features, Pi 4 tuned)
+- Status: **Done**
 
 ### Step 5: Nav2 Autonomous Navigation
-- Install: `ros-humble-navigation2`
-- Config: `config/nav2_params.yaml` (robot footprint, costmap, planner parameters)
-- Status: **TODO**
+- Install on Pi: `sudo apt install -y ros-humble-navigation2 ros-humble-nav2-bringup`
+- Config: `config/nav2_params.yaml` (PiCar-X footprint 21×16.5 cm, RPP controller, NavFn planner, Pi 4 tuned frequencies)
+- Localization: ORB-SLAM3 provides map→odom→base_link TF (no lidar/AMCL needed)
+- Status: **Done**
 
 ### Step 6: Launch Files
 - Location: `src/rover_bringup/` (new package)
-- `slam.launch.py` — mapping mode: camera + ultrasonic + ORB-SLAM3 + pose bridge
-- `nav.launch.py` — navigation mode: load existing map + Nav2
-- Status: **TODO**
+- `slam.launch.py` — mapping mode: camera + ultrasonic + ORB-SLAM3 + pose bridge + static map→odom TF
+- `nav.launch.py` — navigation mode: all SLAM nodes + Nav2 stack (map_server, controller, planner, bt_navigator, lifecycle_manager)
+- `slam_pose_bridge` updated to broadcast `odom→base_link` TF (required by Nav2 costmap)
+- Status: **Done**
 
 ---
 
@@ -64,3 +68,93 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 6 (sequential)
 
 Steps 2 and 3 require physical hardware. All other steps can be written on the dev machine ahead of time.
+
+---
+
+## Known Issues
+
+### Monocular Scale Ambiguity + Bundle Adjustment Drift
+
+**Problem:** ORB-SLAM3 in monocular mode has no concept of absolute metric scale. All reported distances are unitless relative values. After the rover stops moving, ORB-SLAM3 runs Bundle Adjustment (BA) — a batch re-optimization of all historical keyframe poses and 3D map points — which retroactively rewrites previously reported positions to be more geometrically consistent. This causes the SLAM-reported position to "rise then shrink back" after movement, making it unreliable for metric navigation.
+
+**Confirmed by experiment:** Same behavior observed whether the rover is moved manually or via `nav_forward.py` command — the root cause is BA, not the motion source.
+
+**Current workaround:** Static `position_scale=9.6` parameter in `slam_pose_bridge.py`, calibrated once by hand. Doesn't fix BA drift, only corrects the one-time scale factor at startup.
+
+---
+
+## Improvement: Switch ORB-SLAM3 to RGBD Mode (Implemented)
+
+Replace monocular SLAM with **RGBD SLAM** by supplying metric depth maps from
+Depth-Anything-V2-Metric-Indoor-Small running on the Windows host GPU.
+This eliminates monocular scale ambiguity at the source — every keyframe has
+real-world depth constraints, so BA corrections are metrically accurate.
+
+### Architecture
+
+```
+Pi (camera_node)
+  → /rover/camera/image_raw  ─────────────────────────────┐
+                                                           │
+VM (depth_bridge_node)                                     │
+  ← /rover/camera/image_raw (via ROS2 LAN DDS)            │
+  → POST JPEG → Windows host :8765/depth                   │
+  ← float32 depth map (meters, ~100 ms round trip)        │
+  → /rover/camera/depth (32FC1, same timestamp as source)  │
+                                                           ▼
+Pi (orb_slam3_node RGBD)
+  ← /rover/camera/image_raw + /rover/camera/depth (ApproximateTime sync)
+  → TrackRGBD(rgb, depth, ts) → /orb_slam3/pose
+```
+
+### Why the stop-and-go architecture makes this simple
+
+The rover moves 0.5 s, stops 0.9 s, camera settle_delay=0.5 s.
+Depth round trip ≈ 100 ms — fits inside the 0.9 s stop window with 800 ms to spare.
+No async pipeline, no extra stopping, one depth request per stop cycle (~0.7 Hz effective).
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `scripts/windows_depth_server/depth_server.py` | FastAPI server (NEW) |
+| `scripts/windows_depth_server/requirements.txt` | Windows venv deps (NEW) |
+| `src/rover_navigation/rover_navigation/depth_bridge_node.py` | VM bridge node (NEW) |
+| `src/rover_slam/src/orb_slam3_node.cpp` | MONOCULAR → RGBD + message_filters sync |
+| `src/rover_slam/CMakeLists.txt` | Added message_filters |
+| `src/rover_slam/package.xml` | Added message_filters |
+| `config/orbslam3.yaml` | Added Camera.bf, ThDepth, DepthMapFactor |
+| `src/rover_navigation/setup.py` | Registered depth_bridge_node entry point |
+
+### Startup sequence
+
+```bash
+# 1. Windows host — activate venv and start depth server
+depth_venv\Scripts\activate
+python scripts\windows_depth_server\depth_server.py
+
+# 2. Pi — start SLAM and navigation
+ros2 launch rover_bringup nav.launch.py
+
+# 3. VM — start depth bridge (set depth_server_url to Windows host IP)
+ros2 run rover_navigation depth_bridge_node \
+  --ros-args -p depth_server_url:=http://192.168.1.100:8765/depth
+```
+
+### Prerequisite: ROS2 LAN networking
+
+The VM depth_bridge_node subscribes to `/rover/camera/image_raw` published by the Pi.
+Both machines must share the same `ROS_DOMAIN_ID` and the router must allow UDP multicast.
+
+```bash
+# Add to ~/.bashrc on both Pi and VM
+export ROS_DOMAIN_ID=42
+```
+
+Verify with: `ros2 topic hz /rover/camera/image_raw` on the VM while Pi is running.
+
+### orbslam3.yaml depth parameters
+
+- `Camera.bf: 24.0` — virtual baseline × fx (≈7.5 cm equivalent)
+- `ThDepth: 40.0` — mThDepth = 24×40/321 ≈ 3.0 m close-point threshold
+- `DepthMapFactor: 1.0` — depth images are already float32 in meters, no conversion

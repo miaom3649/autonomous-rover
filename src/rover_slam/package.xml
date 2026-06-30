@@ -1,25 +1,23 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>rover_navigation</name>
+  <name>rover_slam</name>
   <version>0.1.0</version>
-  <description>Navigation stack — Kalman filter position estimator and path planning.</description>
+  <description>Lightweight ORB-SLAM3 RGBD ROS2 node for the autonomous rover.</description>
   <maintainer email="miaom3649@gmail.com">Michael Miao</maintainer>
   <license>MIT</license>
 
-  <depend>rclpy</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>tf2_ros</depend>
   <depend>cv_bridge</depend>
-
-  <test_depend>ament_pep8</test_depend>
-  <test_depend>ament_pyflakes</test_depend>
-  <test_depend>pytest</test_depend>
+  <depend>message_filters</depend>
+  <depend>libopencv-dev</depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

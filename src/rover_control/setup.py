@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = "rover_navigation"
+package_name = "rover_control"
 
 setup(
     name=package_name,
@@ -14,15 +14,11 @@ setup(
     zip_safe=True,
     maintainer="Michael Miao",
     maintainer_email="miaom3649@gmail.com",
-    description="Navigation stack for the autonomous rover.",
+    description="Mode switching (MANUAL/AUTO) and emergency stop for the autonomous rover.",
     license="MIT",
     entry_points={
         "console_scripts": [
-            "slam_pose_bridge = rover_navigation.slam_pose_bridge:main",
-            "ultrasonic_to_scan_node = rover_navigation.ultrasonic_to_scan_node:main",
-            "stop_and_go_filter_node = rover_navigation.stop_and_go_filter_node:main",
-            "slam_init_helper_node = rover_navigation.slam_init_helper_node:main",
-            "depth_bridge_node = rover_navigation.depth_bridge_node:main",
+            "mode_controller_node = rover_control.mode_controller_node:main",
         ],
     },
 )

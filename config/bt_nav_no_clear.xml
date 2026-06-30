@@ -1,0 +1,23 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <!--
+      Custom BT: no ClearCostmap recovery.
+      Rationale: with a single-point ultrasonic sensor, clearing the costmap
+      erases real obstacle data and causes the rover to drive into walls.
+      Recovery is limited to a single BackUp attempt; on failure the goal is
+      aborted cleanly instead of looping indefinitely.
+    -->
+    <RecoveryNode number_of_retries="1" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <BackUp backup_dist="0.05" backup_speed="0.025" time_allowance="30.0"/>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

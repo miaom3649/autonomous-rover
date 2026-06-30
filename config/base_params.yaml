@@ -1,0 +1,11 @@
+drive_node:
+  ros__parameters:
+    max_linear_vel: 0.5
+    max_angular_vel: 2.0
+    max_motor_speed: 50
+    max_steering_angle: 30.0
+    cmd_timeout: 0.5
+    ultrasonic_rate_hz: 5.0
+    # 1 = j turns left (default ROS convention)
+    # -1 = j turns right (flip if steering is reversed)
+    steering_sign: -1
