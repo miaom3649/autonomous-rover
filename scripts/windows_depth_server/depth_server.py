@@ -16,23 +16,22 @@ import numpy as np
 import torch
 from fastapi import FastAPI, Request, Response
 from PIL import Image
-from transformers import pipeline
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
-_pipe = None
+_model = None
+_processor = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _pipe
-    device = 0 if torch.cuda.is_available() else -1
-    device_label = f"GPU (CUDA:{device})" if device >= 0 else "CPU"
+    global _model, _processor
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_label = f"GPU (CUDA)" if device == "cuda" else "CPU"
     print(f"Loading {MODEL_ID} on {device_label}...")
-    _pipe = pipeline(
-        task="depth-estimation",
-        model=MODEL_ID,
-        device=device,
-    )
+    _processor = AutoImageProcessor.from_pretrained(MODEL_ID)
+    _model = AutoModelForDepthEstimation.from_pretrained(MODEL_ID).to(device)
+    _model.eval()
     print("Model ready — server accepting requests.\n")
     yield
 
@@ -46,19 +45,14 @@ async def infer_depth(request: Request) -> Response:
     pil_img = Image.open(io.BytesIO(body)).convert("RGB")
 
     t0 = time.perf_counter()
-    result = _pipe(pil_img)
-    dt_ms = (time.perf_counter() - t0) * 1000
+    inputs = _processor(images=pil_img, return_tensors="pt")
+    device = next(_model.parameters()).device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = _model(**inputs)
 
-    print(f"[DEBUG] result keys: {list(result.keys())}")
-    # result["depth"] is an 8-bit normalized visualization image — not metric.
-    # result["predicted_depth"] is the real metric tensor but at the model's
-    # native output resolution, so resize it back to the input image size.
-    predicted = result["predicted_depth"]
-    print(f"[DEBUG] predicted_depth: type={type(predicted).__name__}  "
-          f"shape={tuple(predicted.shape)}  dtype={predicted.dtype}  "
-          f"device={predicted.device}  "
-          f"min={predicted.min().item():.6f}  max={predicted.max().item():.6f}  "
-          f"mean={predicted.mean().item():.6f}")
+    # outputs.predicted_depth: (1, H, W) metric depth in meters at model native res
+    predicted = outputs.predicted_depth
     while predicted.dim() < 4:
         predicted = predicted.unsqueeze(0)
     w, h = pil_img.size
@@ -66,6 +60,7 @@ async def infer_depth(request: Request) -> Response:
         predicted, size=(h, w), mode="bicubic", align_corners=False
     )
     depth_f32 = resized.squeeze().cpu().numpy().astype(np.float32)
+    dt_ms = (time.perf_counter() - t0) * 1000
 
     h, w = depth_f32.shape
     print(f"depth {w}x{h}  min={depth_f32.min():.2f}m  max={depth_f32.max():.2f}m  {dt_ms:.0f}ms")
