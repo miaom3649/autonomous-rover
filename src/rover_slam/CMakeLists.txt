@@ -19,6 +19,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Pangolin REQUIRED)
@@ -41,7 +42,7 @@ target_include_directories(orb_slam3_node PRIVATE
 )
 
 ament_target_dependencies(orb_slam3_node
-  rclcpp std_msgs sensor_msgs geometry_msgs cv_bridge)
+  rclcpp std_msgs sensor_msgs geometry_msgs cv_bridge message_filters)
 
 target_link_directories(orb_slam3_node PRIVATE
   ${ORB_SLAM3_ROOT_DIR}/lib

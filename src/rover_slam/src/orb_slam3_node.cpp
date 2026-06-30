@@ -7,6 +7,9 @@
 #include <unistd.h>
 
 #include <cv_bridge/cv_bridge.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/int32.hpp>
@@ -38,6 +41,11 @@ static void sigsegv_handler(int)
     std::raise(SIGSEGV);
 }
 
+using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::msg::Image,
+    sensor_msgs::msg::Image>;
+using Synchronizer = message_filters::Synchronizer<SyncPolicy>;
+
 class OrbSlam3Node : public rclcpp::Node
 {
 public:
@@ -55,52 +63,58 @@ public:
         }
 
         slam_ = std::make_unique<ORB_SLAM3::System>(
-            vocab, settings, ORB_SLAM3::System::MONOCULAR, /*use_viewer=*/false);
+            vocab, settings, ORB_SLAM3::System::RGBD, /*use_viewer=*/false);
 
-        sub_ = create_subscription<sensor_msgs::msg::Image>(
-            "/rover/camera/image_raw",
-            rclcpp::SensorDataQoS(),
-            std::bind(&OrbSlam3Node::on_image, this, std::placeholders::_1));
+        sub_rgb_.subscribe(this, "/rover/camera/image_raw", rmw_qos_profile_sensor_data);
+        sub_depth_.subscribe(this, "/rover/camera/depth",    rmw_qos_profile_sensor_data);
+
+        sync_ = std::make_shared<Synchronizer>(SyncPolicy(10), sub_rgb_, sub_depth_);
+        sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.3));
+        sync_->registerCallback(&OrbSlam3Node::on_images, this);
 
         pub_pose_  = create_publisher<geometry_msgs::msg::PoseStamped>("/orb_slam3/pose", 10);
         pub_state_ = create_publisher<std_msgs::msg::Int32>("/orb_slam3/state", 10);
         pub_debug_ = create_publisher<sensor_msgs::msg::Image>(
             "/orb_slam3/debug_image", rclcpp::SensorDataQoS());
 
-        RCLCPP_INFO(get_logger(), "ORB-SLAM3 monocular node ready");
+        RCLCPP_INFO(get_logger(), "ORB-SLAM3 RGBD node ready");
     }
 
     ~OrbSlam3Node()
     {
         if (slam_) {
-            sub_.reset();
+            sub_rgb_.unsubscribe();
+            sub_depth_.unsubscribe();
             slam_->Shutdown();
         }
     }
 
 private:
-    void on_image(const sensor_msgs::msg::Image::SharedPtr msg)
+    void on_images(
+        const sensor_msgs::msg::Image::ConstSharedPtr & rgb_msg,
+        const sensor_msgs::msg::Image::ConstSharedPtr & depth_msg)
     {
-        cv_bridge::CvImageConstPtr cv_ptr;
+        cv_bridge::CvImageConstPtr rgb_ptr;
+        cv_bridge::CvImageConstPtr depth_ptr;
         try {
-            cv_ptr = cv_bridge::toCvShare(msg, "rgb8");
+            rgb_ptr   = cv_bridge::toCvShare(rgb_msg,   "rgb8");
+            depth_ptr = cv_bridge::toCvShare(depth_msg, "32FC1");
         } catch (const cv_bridge::Exception & e) {
             RCLCPP_WARN(get_logger(), "cv_bridge: %s", e.what());
             return;
         }
 
-        // Rolling buffer of last N frames for post-failure inspection
-        recent_frames_.push_back(cv_ptr->image.clone());
+        recent_frames_.push_back(rgb_ptr->image.clone());
         if (recent_frames_.size() > kFrameBuffer) {
             recent_frames_.pop_front();
         }
 
-        const double ts = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
+        const double ts = rgb_msg->header.stamp.sec + rgb_msg->header.stamp.nanosec * 1e-9;
         Sophus::SE3f pose;
         try {
-            pose = slam_->TrackMonocular(cv_ptr->image, ts);
+            pose = slam_->TrackRGBD(rgb_ptr->image, depth_ptr->image, ts);
         } catch (const std::exception & e) {
-            RCLCPP_ERROR(get_logger(), "TrackMonocular threw: %s", e.what());
+            RCLCPP_ERROR(get_logger(), "TrackRGBD threw: %s", e.what());
             return;
         }
 
@@ -108,7 +122,6 @@ private:
         const auto tracked_kps = slam_->GetTrackedKeyPointsUn();
         ++frame_count_;
 
-        // Heartbeat every 5 s (75 frames @ 15 fps)
         if (frame_count_ % 75 == 0) {
             long rss_kb = 0;
             if (FILE * f = std::fopen("/proc/self/status", "r")) {
@@ -124,7 +137,6 @@ private:
             pub_state_->publish(s);
         }
 
-        // State transition — log with keypoint count at the moment of change
         if (cur_state != prev_state_) {
             RCLCPP_WARN(get_logger(),
                 "SLAM state  %s → %s   kps=%zu  frame=%lu",
@@ -133,7 +145,6 @@ private:
             std_msgs::msg::Int32 s; s.data = cur_state;
             pub_state_->publish(s);
 
-            // On tracking loss: save recent frames to /tmp/ for inspection
             if (cur_state == 3 || cur_state == 4) {
                 int idx = 0;
                 for (const auto & frame : recent_frames_) {
@@ -152,9 +163,8 @@ private:
             prev_state_ = cur_state;
         }
 
-        // Debug image — only render when a subscriber is connected
         if (pub_debug_->get_subscription_count() > 0) {
-            publish_debug(cv_ptr->image, msg->header, cur_state, tracked_kps);
+            publish_debug(rgb_ptr->image, rgb_msg->header, cur_state, tracked_kps);
         }
 
         if (cur_state != 2) {
@@ -162,7 +172,7 @@ private:
         }
 
         geometry_msgs::msg::PoseStamped out;
-        out.header          = msg->header;
+        out.header          = rgb_msg->header;
         out.header.frame_id = "map";
 
         const auto t = pose.translation();
@@ -188,8 +198,8 @@ private:
         cv::cvtColor(rgb, vis, cv::COLOR_RGB2BGR);
 
         const cv::Scalar dot_color = (state == 2)
-            ? cv::Scalar(0, 220, 0)    // green — tracking OK
-            : cv::Scalar(0, 0, 220);   // red   — lost
+            ? cv::Scalar(0, 220, 0)
+            : cv::Scalar(0, 0, 220);
         for (const auto & kp : kps) {
             cv::circle(vis, kp.pt, 3, dot_color, -1);
         }
@@ -212,7 +222,11 @@ private:
     static constexpr size_t kFrameBuffer = 5;
 
     std::unique_ptr<ORB_SLAM3::System> slam_;
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_;
+
+    message_filters::Subscriber<sensor_msgs::msg::Image> sub_rgb_;
+    message_filters::Subscriber<sensor_msgs::msg::Image> sub_depth_;
+    std::shared_ptr<Synchronizer> sync_;
+
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_pose_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_state_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_debug_;

@@ -1,0 +1,18 @@
+# Windows depth inference server dependencies
+# Install in a dedicated venv — do NOT pollute system Python.
+#
+# Step 1: create and activate venv
+#   python -m venv depth_venv
+#   depth_venv\Scripts\activate
+#
+# Step 2: install PyTorch with CUDA 12.1 (matches 4060 Ti driver)
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# Step 3: install remaining deps
+#   pip install -r requirements.txt
+
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+transformers==4.41.2
+pillow==10.3.0
+numpy==1.26.4

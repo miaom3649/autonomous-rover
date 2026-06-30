@@ -24,6 +24,16 @@ Camera.fps:    15
 Camera.RGB:    1
 
 #--------------------------------------------------------------------------------------------
+# RGBD-specific parameters
+# Camera.bf = virtual_baseline_m * fx — affects close/far point classification
+# mThDepth (m) = Camera.bf * ThDepth / Camera.fx = 24 * 40 / 321 ≈ 3.0 m
+# DepthMapFactor: depth images are float32 in meters — no conversion needed (factor = 1)
+#--------------------------------------------------------------------------------------------
+Camera.bf: 24.0
+ThDepth: 40.0
+DepthMapFactor: 1.0
+
+#--------------------------------------------------------------------------------------------
 # ORB extractor — reduced feature count for Pi 4 CPU budget
 #--------------------------------------------------------------------------------------------
 ORBextractor.nFeatures:   1000

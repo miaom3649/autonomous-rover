@@ -3,7 +3,7 @@
 <package format="3">
   <name>rover_slam</name>
   <version>0.1.0</version>
-  <description>Lightweight ORB-SLAM3 monocular ROS2 node for the autonomous rover.</description>
+  <description>Lightweight ORB-SLAM3 RGBD ROS2 node for the autonomous rover.</description>
   <maintainer email="miaom3649@gmail.com">Michael Miao</maintainer>
   <license>MIT</license>
 
@@ -14,6 +14,7 @@
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
   <depend>libopencv-dev</depend>
 
   <export>
