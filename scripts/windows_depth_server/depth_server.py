@@ -16,9 +16,9 @@ import numpy as np
 import torch
 from fastapi import FastAPI, Request, Response
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+from transformers import AutoModelForDepthEstimation, AutoImageProcessor
 
-MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+MODEL_ID = "Intel/zoedepth-nyu"
 _model = None
 _processor = None
 
@@ -27,7 +27,7 @@ _processor = None
 async def lifespan(app: FastAPI):
     global _model, _processor
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    device_label = f"GPU (CUDA)" if device == "cuda" else "CPU"
+    device_label = "GPU (CUDA)" if device == "cuda" else "CPU"
     print(f"Loading {MODEL_ID} on {device_label}...")
     _processor = AutoImageProcessor.from_pretrained(MODEL_ID)
     _model = AutoModelForDepthEstimation.from_pretrained(MODEL_ID).to(device)
@@ -51,7 +51,7 @@ async def infer_depth(request: Request) -> Response:
     with torch.no_grad():
         outputs = _model(**inputs)
 
-    # outputs.predicted_depth: (1, H, W) metric depth in meters at model native res
+    # outputs.predicted_depth: metric depth in meters at model native resolution
     predicted = outputs.predicted_depth
     while predicted.dim() < 4:
         predicted = predicted.unsqueeze(0)
