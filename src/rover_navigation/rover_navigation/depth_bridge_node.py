@@ -30,9 +30,9 @@ class DepthBridgeNode(Node):
         self.declare_parameter("settle_delay", 0.5)
         self.declare_parameter("request_timeout", 0.8)
 
-        self._server_url: str = self.get_parameter("depth_server_url").as_string()
-        self._settle_delay: float = self.get_parameter("settle_delay").as_double()
-        self._timeout: float = self.get_parameter("request_timeout").as_double()
+        self._server_url: str = self.get_parameter("depth_server_url").value
+        self._settle_delay: float = float(self.get_parameter("settle_delay").value)
+        self._timeout: float = float(self.get_parameter("request_timeout").value)
 
         self._bridge = CvBridge()
         self._lock = threading.Lock()
