@@ -96,9 +96,9 @@ real-world depth constraints, so BA corrections are metrically accurate.
 Pi (camera_node)
   → /rover/camera/image_raw  ─────────────────────────────┐
                                                            │
-VM (depth_bridge_node)                                     │
-  ← /rover/camera/image_raw (via ROS2 LAN DDS)            │
-  → POST JPEG → Windows host :8765/depth                   │
+Pi (depth_bridge_node)                                     │
+  ← /rover/camera/image_raw (local ROS2 topic, same machine)│
+  → POST JPEG over LAN → Windows host :8765/depth          │
   ← float32 depth map (meters, ~100 ms round trip)        │
   → /rover/camera/depth (32FC1, same timestamp as source)  │
                                                            ▼
@@ -106,6 +106,11 @@ Pi (orb_slam3_node RGBD)
   ← /rover/camera/image_raw + /rover/camera/depth (ApproximateTime sync)
   → TrackRGBD(rgb, depth, ts) → /orb_slam3/pose
 ```
+
+`depth_bridge_node` runs on the Pi (not the dev machine) — the dev machine VM has no
+ROS2 installed, and the Pi already has ROS2, so it's simpler for the Pi to talk to
+the Windows depth server directly over plain HTTP. No ROS2 networking between VM
+and Pi is needed for this feature.
 
 ### Why the stop-and-go architecture makes this simple
 
@@ -119,7 +124,7 @@ No async pipeline, no extra stopping, one depth request per stop cycle (~0.7 Hz 
 |------|--------|
 | `scripts/windows_depth_server/depth_server.py` | FastAPI server (NEW) |
 | `scripts/windows_depth_server/requirements.txt` | Windows venv deps (NEW) |
-| `src/rover_navigation/rover_navigation/depth_bridge_node.py` | VM bridge node (NEW) |
+| `src/rover_navigation/rover_navigation/depth_bridge_node.py` | Pi bridge node (NEW) |
 | `src/rover_slam/src/orb_slam3_node.cpp` | MONOCULAR → RGBD + message_filters sync |
 | `src/rover_slam/CMakeLists.txt` | Added message_filters |
 | `src/rover_slam/package.xml` | Added message_filters |
@@ -133,25 +138,13 @@ No async pipeline, no extra stopping, one depth request per stop cycle (~0.7 Hz 
 depth_venv\Scripts\activate
 python scripts\windows_depth_server\depth_server.py
 
-# 2. Pi — start SLAM and navigation
-ros2 launch rover_bringup nav.launch.py
-
-# 3. VM — start depth bridge (set depth_server_url to Windows host IP)
-ros2 run rover_navigation depth_bridge_node \
-  --ros-args -p depth_server_url:=http://192.168.1.100:8765/depth
+# 2. Pi — start SLAM and navigation (depth_bridge_node is launched automatically)
+ros2 launch rover_bringup nav.launch.py depth_server_url:=http://192.168.1.151:8765/depth
 ```
 
-### Prerequisite: ROS2 LAN networking
-
-The VM depth_bridge_node subscribes to `/rover/camera/image_raw` published by the Pi.
-Both machines must share the same `ROS_DOMAIN_ID` and the router must allow UDP multicast.
-
-```bash
-# Add to ~/.bashrc on both Pi and VM
-export ROS_DOMAIN_ID=42
-```
-
-Verify with: `ros2 topic hz /rover/camera/image_raw` on the VM while Pi is running.
+No ROS2 networking between the VM and the Pi is required for this feature —
+`depth_bridge_node` runs on the Pi and reaches the Windows depth server over
+plain HTTP on the LAN.
 
 ### orbslam3.yaml depth parameters
 
