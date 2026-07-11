@@ -20,7 +20,7 @@ class SlamInitHelperNode(Node):
     def __init__(self) -> None:
         super().__init__("slam_init_helper_node")
 
-        self.declare_parameter("pan_home", 16.0)
+        self.declare_parameter("pan_home", 17.0)
         self.declare_parameter("pan_amplitude", 5.0)
         self.declare_parameter("sweep_period", 4.0)
 
