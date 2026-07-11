@@ -39,8 +39,6 @@ class DepthBridgeNode(Node):
         self.declare_parameter("ultrasonic_correction", True)
         self.declare_parameter("ultrasonic_max_age", 1.0)
         self.declare_parameter("ultrasonic_region_frac", 0.2)
-        self.declare_parameter("correction_scale_min", 0.5)
-        self.declare_parameter("correction_scale_max", 2.0)
 
         self._server_url: str = self.get_parameter("depth_server_url").value
         self._settle_delay: float = float(self.get_parameter("settle_delay").value)
@@ -52,8 +50,6 @@ class DepthBridgeNode(Node):
             self.get_parameter("ultrasonic_max_age").value
         )
         self._region_frac: float = float(self.get_parameter("ultrasonic_region_frac").value)
-        self._scale_min: float = float(self.get_parameter("correction_scale_min").value)
-        self._scale_max: float = float(self.get_parameter("correction_scale_max").value)
 
         self._bridge = CvBridge()
         self._lock = threading.Lock()
@@ -120,12 +116,11 @@ class DepthBridgeNode(Node):
         off by a ratio that varies with the scene (see README). The ultrasonic sensor
         gives one trusted point measurement of what's directly ahead; we use it to
         estimate that ratio for this frame and apply it to the whole map. Falls back
-        to the raw (uncorrected) depth whenever there's no usable ultrasonic reading,
-        or when the ultrasonic and AI estimates disagree by more than
-        correction_scale_min/max — a mismatch that large usually means the ultrasonic
-        cone caught something (e.g. a small low obstacle) the camera never saw, so the
-        two sensors are measuring different things and blending them would only make
-        the whole map worse, not better.
+        to the raw (uncorrected) depth whenever there's no usable ultrasonic reading.
+        The ultrasonic reading is trusted unconditionally otherwise — no plausibility
+        check against the AI's own estimate, so a mismatch (e.g. the ultrasonic cone
+        catching a small obstacle the camera never saw) will scale the whole map by
+        whatever ratio results, correct or not.
         Returns (possibly-corrected depth, scale factor used or None if unchanged).
         """
         if not self._ultrasonic_correction:
@@ -157,10 +152,6 @@ class DepthBridgeNode(Node):
             return depth, None
 
         scale = us_range / ai_center_estimate
-        if scale < self._scale_min or scale > self._scale_max:
-            # Ultrasonic and AI disagree too much to be looking at the same thing —
-            # applying this scale would corrupt the whole map, so skip correction.
-            return depth, None
         return (depth * scale).astype(np.float32), scale
 
     def _fetch_and_publish(self, frame_msg: Image) -> None:

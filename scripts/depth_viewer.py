@@ -46,8 +46,6 @@ GRID_COLS = 4
 # Same defaults as depth_bridge_node.py's ultrasonic_correction parameters.
 ULTRASONIC_MAX_AGE = 1.0
 ULTRASONIC_REGION_FRAC = 0.2
-CORRECTION_SCALE_MIN = 0.5
-CORRECTION_SCALE_MAX = 2.0
 
 
 def _camera_topic_has_publisher(topic: str) -> bool:
@@ -202,11 +200,6 @@ def _apply_ultrasonic_correction(
         return depth, None
 
     scale = us_range / ai_center_estimate
-    if scale < CORRECTION_SCALE_MIN or scale > CORRECTION_SCALE_MAX:
-        # Ultrasonic and AI disagree too much to be looking at the same thing
-        # (e.g. a small obstacle in the ultrasonic cone the camera never saw) —
-        # applying this scale would corrupt the whole map, so skip correction.
-        return depth, None
     return (depth * scale).astype(np.float32), scale
 
 

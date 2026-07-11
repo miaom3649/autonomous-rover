@@ -76,7 +76,7 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_navigation",
             executable="slam_pose_bridge",
             name="slam_pose_bridge",
-            parameters=[{"camera_tilt_deg": 3.0, "position_scale": 9.6}],
+            parameters=[{"camera_tilt_deg": 2.0, "position_scale": 9.6}],
         ),
 
         # ── SLAM initialisation helper (pan sweep until tracking starts) ─────
