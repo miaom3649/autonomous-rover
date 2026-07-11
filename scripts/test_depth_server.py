@@ -1,29 +1,28 @@
 """
-Depth server end-to-end diagnostic.
+Depth server live diagnostic.
 
-Grabs one frame from /rover/camera/image_raw (requires camera_node to be
-running), POSTs it to the Windows depth inference server, prints depth
-statistics, and saves a side-by-side RGB + colorized depth image annotated
-with a grid of per-region mean distances, so the AI's numbers can be
-eyeballed against the RGB frame region by region.
+Continuously grabs frames from /rover/camera/image_raw, POSTs them to the
+Windows depth inference server, and streams the annotated result (RGB +
+colorized depth, both overlaid with a grid of per-region mean distances) as
+MJPEG over HTTP — open http://raspberrypi.local:8081 in a browser (same
+pattern as scripts/camera_viewer.py).
 
-Usage (on Pi, with nav.launch.py or camera_node already running):
+If nothing is already publishing the camera topic (e.g. nav.launch.py isn't
+running), this script starts a standalone `camera_node` itself and stops it
+again on exit — no need to launch the full stack just to test the depth
+server. Pass --no-camera to disable this and fail fast instead.
+
+Usage (on Pi):
     source /opt/ros/humble/setup.bash
     source ~/dev/autonomous-rover/install/setup.bash
     python3 scripts/test_depth_server.py [--url URL]
-
-Outputs saved to log/ and scped to the dev machine if running over SSH:
-    <ts>_rgb.jpg        captured RGB frame sent to the server
-    <ts>_depth.png      side-by-side RGB | colorized depth (TURBO), both
-                        overlaid with a grid of per-region mean distances
-    <ts>_depth_raw.npy  raw float32 depth array in meters
+    # Ctrl+C to stop
 """
 import argparse
-import os
 import subprocess
-import sys
+import threading
 import time
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
 import numpy as np
@@ -34,40 +33,33 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
-DEV_LOG_DIR = "~/dev/autonomous-rover/log"
+WATCH_PORT = 8081
 GRID_ROWS = 3
 GRID_COLS = 4
 
 
-class _OneShot(Node):
-    def __init__(self, topic: str) -> None:
-        super().__init__("depth_server_probe")
-        self._bridge = CvBridge()
-        self._frame: np.ndarray | None = None
-        self.create_subscription(Image, topic, self._cb, qos_profile_sensor_data)
+def _camera_topic_has_publisher(topic: str) -> bool:
+    """Check for an existing publisher on `topic` via the CLI (no rclpy node needed)."""
+    try:
+        result = subprocess.run(
+            ["ros2", "topic", "info", topic, "--verbose"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Publisher count:"):
+            return int(line.split(":")[1].strip()) > 0
+    return False
 
-    def _cb(self, msg: Image) -> None:
-        if self._frame is None:
-            self._frame = self._bridge.imgmsg_to_cv2(msg, "bgr8")
-            self.get_logger().info(
-                f"Frame grabbed: {self._frame.shape[1]}×{self._frame.shape[0]}"
-            )
 
-
-def _grab_frame(topic: str, timeout_s: float = 10.0) -> np.ndarray:
-    """Subscribe once to a camera topic and return the first frame as BGR."""
-    rclpy.init()
-    node = _OneShot(topic)
-    deadline = time.monotonic() + timeout_s
-    while node._frame is None and time.monotonic() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.1)
-    frame = node._frame
-    node.destroy_node()
-    rclpy.shutdown()
-    if frame is None:
-        print(f"ERROR: no message on {topic} within {timeout_s}s — is camera_node running?")
-        sys.exit(1)
-    return frame
+def _start_camera_node() -> subprocess.Popen:
+    """Launch a standalone camera_node so this script can run without nav.launch.py."""
+    print("[camera_node] no publisher on the image topic — starting camera_node standalone...")
+    return subprocess.Popen(
+        ["ros2", "run", "rover_camera", "camera_node"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def _post_and_decode(bgr: np.ndarray, url: str, timeout_s: float) -> tuple[np.ndarray, float]:
@@ -144,92 +136,110 @@ def _build_annotated_image(bgr: np.ndarray, depth: np.ndarray) -> np.ndarray:
     return np.hstack([rgb_panel, depth_panel])
 
 
-def _scp_files(paths: list[Path]) -> None:
-    ssh_env = os.environ.get("SSH_CLIENT", "").split()
-    if not ssh_env:
-        print("Not running over SSH — files saved locally on Pi:")
-        for p in paths:
-            print(f"  {p.resolve()}")
-        return
-    dev_ip = ssh_env[0]
-    dev_user = os.environ.get("ROVER_DEV_USER", "konkon")
-    remote = f"{dev_user}@{dev_ip}:{DEV_LOG_DIR}/"
-    for path in paths:
-        r = subprocess.run(["scp", str(path), remote], capture_output=True, text=True)
-        if r.returncode == 0:
-            print(f"  → {DEV_LOG_DIR}/{path.name}")
-        else:
-            print(f"  scp failed for {path.name}: {r.stderr.strip()}")
-            print(f"  (saved locally: {path.resolve()})")
+class _LiveFeed(Node):
+    """Continuously updates `self.frame` with the latest camera image."""
+
+    def __init__(self, topic: str) -> None:
+        super().__init__("depth_server_watch")
+        self._bridge = CvBridge()
+        self.frame: np.ndarray | None = None
+        self.create_subscription(Image, topic, self._cb, qos_profile_sensor_data)
+
+    def _cb(self, msg: Image) -> None:
+        self.frame = self._bridge.imgmsg_to_cv2(msg, "bgr8")
+
+
+class _MjpegHandler(BaseHTTPRequestHandler):
+    latest_jpeg: bytes | None = None
+    lock = threading.Lock()
+
+    def log_message(self, *args) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        try:
+            while True:
+                with _MjpegHandler.lock:
+                    data = _MjpegHandler.latest_jpeg
+                if data:
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                    self.wfile.write(data)
+                    self.wfile.write(b"\r\n")
+                time.sleep(0.05)
+        except Exception:
+            pass
+
+
+def _infer_loop(node: _LiveFeed, url: str, timeout_s: float) -> None:
+    while rclpy.ok():
+        frame = node.frame
+        if frame is None:
+            time.sleep(0.1)
+            continue
+        try:
+            depth, dt_ms = _post_and_decode(frame, url, timeout_s)
+            combined = _build_annotated_image(frame, depth)
+            cv2.putText(combined, f"round-trip: {dt_ms:.0f} ms", (6, combined.shape[0] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            with _MjpegHandler.lock:
+                _MjpegHandler.latest_jpeg = jpeg.tobytes()
+        except Exception as exc:
+            node.get_logger().warn(f"depth request failed: {exc}")
+            time.sleep(1.0)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Depth server end-to-end diagnostic")
+    parser = argparse.ArgumentParser(description="Depth server live diagnostic")
     parser.add_argument("--url", default="http://192.168.1.151:8765/depth",
                         help="Depth server URL")
     parser.add_argument("--topic", default="/rover/camera/image_raw",
                         help="ROS2 image topic to grab from")
     parser.add_argument("--timeout", type=float, default=5.0,
                         help="HTTP request timeout in seconds")
+    parser.add_argument("--no-camera", action="store_true",
+                        help="Don't auto-start camera_node even if the topic has no publisher")
     args = parser.parse_args()
 
-    log_dir = Path(__file__).resolve().parent.parent / "log"
-    log_dir.mkdir(exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-
-    print("=== Depth Server Diagnostic ===")
+    print("=== Depth Server Live Diagnostic ===")
     print(f"URL   : {args.url}")
     print(f"Topic : {args.topic}")
     print()
 
-    # ── Step 1: grab a camera frame from the running ROS camera node ──────────
-    print("Step 1: grabbing frame from ROS topic...")
-    bgr = _grab_frame(args.topic, timeout_s=10.0)
-    rgb_path = log_dir / f"{ts}_rgb.jpg"
-    cv2.imwrite(str(rgb_path), bgr)
-    print(f"  saved: {rgb_path.name}")
+    started_camera_proc = None
+    if not args.no_camera and not _camera_topic_has_publisher(args.topic):
+        started_camera_proc = _start_camera_node()
 
-    # ── Step 2: call depth server ─────────────────────────────────────────────
-    print(f"\nStep 2: POSTing JPEG to {args.url} ...")
     try:
-        depth, dt_ms = _post_and_decode(bgr, args.url, args.timeout)
-    except requests.Timeout:
-        print(f"  ERROR: timeout ({args.timeout}s) — is depth_server.py running on Windows?")
-        sys.exit(1)
-    except Exception as exc:
-        print(f"  ERROR: {exc}")
-        sys.exit(1)
-    print(f"  round-trip: {dt_ms:.0f} ms   depth shape: {depth.shape}   dtype: {depth.dtype}")
+        rclpy.init()
+        node = _LiveFeed(args.topic)
+        threading.Thread(target=_infer_loop, args=(node, args.url, args.timeout),
+                          daemon=True).start()
 
-    # ── Step 3: print statistics ──────────────────────────────────────────────
-    print("\nStep 3: depth statistics")
-    valid = depth[(depth > 0) & np.isfinite(depth)]
-    print(f"  raw values:   min={depth.min():.4f}  max={depth.max():.4f}  mean={depth.mean():.4f}")
-    print(f"  valid pixels: {valid.size} / {depth.size}  ({100 * valid.size / depth.size:.1f}%)")
-    if valid.size:
-        pcts = np.percentile(valid, [5, 25, 50, 75, 95])
-        print(f"  percentiles (5/25/50/75/95): "
-              f"{pcts[0]:.2f}  {pcts[1]:.2f}  {pcts[2]:.2f}  {pcts[3]:.2f}  {pcts[4]:.2f} m")
-    else:
-        print("  *** WARNING: no valid depth — check depth_server.py output ***")
+        server = HTTPServer(("0.0.0.0", WATCH_PORT), _MjpegHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print(f"Live depth view ready — open http://raspberrypi.local:{WATCH_PORT}"
+              "  (Ctrl+C to stop)")
 
-    # ── Step 4: save visualizations ───────────────────────────────────────────
-    print("\nStep 4: saving visualizations...")
-    combined = _build_annotated_image(bgr, depth)
-
-    depth_vis_path = log_dir / f"{ts}_depth.png"
-    npy_path = log_dir / f"{ts}_depth_raw.npy"
-    cv2.imwrite(str(depth_vis_path), combined)
-    np.save(str(npy_path), depth)
-    print(f"  {depth_vis_path.name}  (left = RGB, right = depth TURBO colormap, "
-          f"{GRID_ROWS}x{GRID_COLS} grid = AI mean distance per region)")
-    print(f"  {npy_path.name}         (raw float32 meters, load with np.load)")
-
-    # ── Step 5: scp results to dev machine ───────────────────────────────────
-    print("\nStep 5: transferring to dev machine...")
-    _scp_files([rgb_path, depth_vis_path, npy_path])
-
-    print("\n=== DONE ===")
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
+            server.shutdown()
+    finally:
+        if started_camera_proc is not None:
+            print("\nStopping the camera_node we started...")
+            started_camera_proc.terminate()
+            try:
+                started_camera_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                started_camera_proc.kill()
 
 
 if __name__ == "__main__":
