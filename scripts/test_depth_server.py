@@ -3,7 +3,9 @@ Depth server end-to-end diagnostic.
 
 Grabs one frame from /rover/camera/image_raw (requires camera_node to be
 running), POSTs it to the Windows depth inference server, prints depth
-statistics, and saves a side-by-side RGB + colorized depth image.
+statistics, and saves a side-by-side RGB + colorized depth image annotated
+with a grid of per-region mean distances, so the AI's numbers can be
+eyeballed against the RGB frame region by region.
 
 Usage (on Pi, with nav.launch.py or camera_node already running):
     source /opt/ros/humble/setup.bash
@@ -12,7 +14,8 @@ Usage (on Pi, with nav.launch.py or camera_node already running):
 
 Outputs saved to log/ and scped to the dev machine if running over SSH:
     <ts>_rgb.jpg        captured RGB frame sent to the server
-    <ts>_depth.png      side-by-side RGB | colorized depth (TURBO, meters)
+    <ts>_depth.png      side-by-side RGB | colorized depth (TURBO), both
+                        overlaid with a grid of per-region mean distances
     <ts>_depth_raw.npy  raw float32 depth array in meters
 """
 import argparse
@@ -32,6 +35,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 DEV_LOG_DIR = "~/dev/autonomous-rover/log"
+GRID_ROWS = 3
+GRID_COLS = 4
 
 
 class _OneShot(Node):
@@ -95,17 +100,48 @@ def _colorize_depth(depth: np.ndarray) -> np.ndarray:
     norm = np.clip((depth - lo) / (hi - lo), 0.0, 1.0)
     colored = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
     colored[~((depth > 0) & np.isfinite(depth))] = 0  # black out invalid pixels
-
-    stats = (
-        f"min={valid.min():.2f}m  max={valid.max():.2f}m  "
-        f"mean={valid.mean():.2f}m  valid={100 * valid.size / depth.size:.0f}%"
-        if valid.size
-        else "ALL INVALID — depth values are 0 or non-finite"
-    )
-    cv2.putText(
-        colored, stats, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA
-    )
     return colored
+
+
+def _draw_region_grid(panel: np.ndarray, depth: np.ndarray) -> None:
+    """Overlay a grid on `panel`, labeling each cell with its mean depth in meters.
+
+    `depth` and `panel` must have the same height/width. Modifies `panel` in place.
+    """
+    h, w = depth.shape
+    cell_h, cell_w = h / GRID_ROWS, w / GRID_COLS
+
+    for row in range(GRID_ROWS):
+        for col in range(GRID_COLS):
+            y0, y1 = int(row * cell_h), int((row + 1) * cell_h)
+            x0, x1 = int(col * cell_w), int((col + 1) * cell_w)
+            cell = depth[y0:y1, x0:x1]
+            valid = cell[(cell > 0) & np.isfinite(cell)]
+            label = f"{valid.mean():.2f}m" if valid.size > cell.size * 0.1 else "N/A"
+
+            cv2.rectangle(panel, (x0, y0), (x1 - 1, y1 - 1), (0, 255, 255), 1)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            tx = x0 + (x1 - x0 - tw) // 2
+            ty = y0 + (y1 - y0 + th) // 2
+            cv2.rectangle(panel, (tx - 3, ty - th - 3), (tx + tw + 3, ty + 4), (0, 0, 0), -1)
+            cv2.putText(panel, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        (0, 255, 255), 1, cv2.LINE_AA)
+
+
+def _build_annotated_image(bgr: np.ndarray, depth: np.ndarray) -> np.ndarray:
+    """RGB | colorized-depth side by side, both annotated with a shared per-region grid."""
+    rgb_panel = cv2.resize(bgr, (depth.shape[1], depth.shape[0]))
+    depth_panel = _colorize_depth(depth)
+
+    _draw_region_grid(rgb_panel, depth)
+    _draw_region_grid(depth_panel, depth)
+
+    cv2.putText(rgb_panel, "RGB (measure by eye here)", (6, 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(depth_panel, "AI depth (region mean, meters)", (6, 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+    return np.hstack([rgb_panel, depth_panel])
 
 
 def _scp_files(paths: list[Path]) -> None:
@@ -179,15 +215,14 @@ def main() -> None:
 
     # ── Step 4: save visualizations ───────────────────────────────────────────
     print("\nStep 4: saving visualizations...")
-    colored = _colorize_depth(depth)
-    rgb_resized = cv2.resize(bgr, (depth.shape[1], depth.shape[0]))
-    combined = np.hstack([rgb_resized, colored])
+    combined = _build_annotated_image(bgr, depth)
 
     depth_vis_path = log_dir / f"{ts}_depth.png"
     npy_path = log_dir / f"{ts}_depth_raw.npy"
     cv2.imwrite(str(depth_vis_path), combined)
     np.save(str(npy_path), depth)
-    print(f"  {depth_vis_path.name}  (left = RGB input, right = depth TURBO colormap)")
+    print(f"  {depth_vis_path.name}  (left = RGB, right = depth TURBO colormap, "
+          f"{GRID_ROWS}x{GRID_COLS} grid = AI mean distance per region)")
     print(f"  {npy_path.name}         (raw float32 meters, load with np.load)")
 
     # ── Step 5: scp results to dev machine ───────────────────────────────────
