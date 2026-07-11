@@ -4,13 +4,12 @@ set -euo pipefail
 ROVER_HOST="raspberrypi.local"
 ROVER_USER="konkon"
 ROVER_WS="/home/konkon/dev/autonomous-rover"
+REPO_URL="https://github.com/miaom3649/autonomous-rover.git"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 echo "Deploying branch '$BRANCH' to $ROVER_USER@$ROVER_HOST..."
 
 git push origin "$BRANCH"
-
-REPO_URL=$(git remote get-url origin)
 
 ssh "$ROVER_USER@$ROVER_HOST" bash <<EOF
 set -eo pipefail

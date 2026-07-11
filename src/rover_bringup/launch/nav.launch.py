@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -20,6 +20,18 @@ def generate_launch_description() -> LaunchDescription:
                               description="Run in simulation mode (no hardware required)"),
         DeclareLaunchArgument("depth_server_url", default_value="http://192.168.1.151:8765/depth",
                               description="URL of the Windows depth inference server"),
+        DeclareLaunchArgument(
+            "nav2_start_delay", default_value="45.0",
+            description=(
+                "Seconds to wait before starting the Nav2 stack. On a 2GB Pi 4, "
+                "ORB-SLAM3 loading its ~145MB text vocabulary at the same time Nav2's "
+                "costmaps and camera/SLAM are all initializing can exceed available "
+                "RAM, causing the whole system to swap-thrash into total unresponsiveness "
+                "(SD-card-speed swap under sustained pressure never triggers the OOM "
+                "killer, so it doesn't recover on its own). Staggering the startup keeps "
+                "peak memory demand from stacking."
+            ),
+        ),
 
         # ── Hardware nodes ────────────────────────────────────────────────────
         Node(
@@ -113,36 +125,43 @@ def generate_launch_description() -> LaunchDescription:
         ),
 
         # ── Nav2 stack ────────────────────────────────────────────────────────
-        Node(
-            package="nav2_controller",
-            executable="controller_server",
-            name="controller_server",
-            parameters=[nav2_params],
-            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
-        ),
-        Node(
-            package="nav2_planner",
-            executable="planner_server",
-            name="planner_server",
-            parameters=[nav2_params],
-        ),
-        Node(
-            package="nav2_behaviors",
-            executable="behavior_server",
-            name="behavior_server",
-            parameters=[nav2_params],
-            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
-        ),
-        Node(
-            package="nav2_bt_navigator",
-            executable="bt_navigator",
-            name="bt_navigator",
-            parameters=[nav2_params],
-        ),
-        Node(
-            package="nav2_lifecycle_manager",
-            executable="lifecycle_manager",
-            name="lifecycle_manager",
-            parameters=[nav2_params],
+        # Delayed: see nav2_start_delay above — avoids stacking Nav2's costmap
+        # init memory spike on top of ORB-SLAM3's vocabulary load.
+        TimerAction(
+            period=LaunchConfiguration("nav2_start_delay"),
+            actions=[
+                Node(
+                    package="nav2_controller",
+                    executable="controller_server",
+                    name="controller_server",
+                    parameters=[nav2_params],
+                    remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
+                ),
+                Node(
+                    package="nav2_planner",
+                    executable="planner_server",
+                    name="planner_server",
+                    parameters=[nav2_params],
+                ),
+                Node(
+                    package="nav2_behaviors",
+                    executable="behavior_server",
+                    name="behavior_server",
+                    parameters=[nav2_params],
+                    remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
+                ),
+                Node(
+                    package="nav2_bt_navigator",
+                    executable="bt_navigator",
+                    name="bt_navigator",
+                    parameters=[nav2_params],
+                ),
+                Node(
+                    package="nav2_lifecycle_manager",
+                    executable="lifecycle_manager",
+                    name="lifecycle_manager",
+                    parameters=[nav2_params],
+                ),
+            ],
         ),
     ])
