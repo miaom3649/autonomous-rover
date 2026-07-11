@@ -7,6 +7,12 @@ colorized depth, both overlaid with a grid of per-region mean distances) as
 MJPEG over HTTP — open http://raspberrypi.local:8081 in a browser (same
 pattern as scripts/camera_viewer.py).
 
+Also subscribes to /rover/ultrasonic/range and applies the same scale
+correction as depth_bridge_node.py (rescales the AI depth map so its
+forward-center estimate matches the ultrasonic reading), so what you see
+here matches what actually gets published for navigation. The current
+ultrasonic reading and correction scale are overlaid on the image.
+
 If nothing is already publishing the camera topic (e.g. nav.launch.py isn't
 running), this script starts a standalone `camera_node` itself and stops it
 again on exit — no need to launch the full stack just to test the depth
@@ -15,7 +21,7 @@ server. Pass --no-camera to disable this and fail fast instead.
 Usage (on Pi):
     source /opt/ros/humble/setup.bash
     source ~/dev/autonomous-rover/install/setup.bash
-    python3 scripts/test_depth_server.py [--url URL]
+    python3 scripts/depth_viewer.py [--url URL]
     # Ctrl+C to stop
 """
 import argparse
@@ -31,11 +37,17 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Range
 
 WATCH_PORT = 8081
 GRID_ROWS = 3
 GRID_COLS = 4
+
+# Same defaults as depth_bridge_node.py's ultrasonic_correction parameters.
+ULTRASONIC_MAX_AGE = 1.0
+ULTRASONIC_REGION_FRAC = 0.2
+CORRECTION_SCALE_MIN = 0.3
+CORRECTION_SCALE_MAX = 3.0
 
 
 def _camera_topic_has_publisher(topic: str) -> bool:
@@ -137,16 +149,61 @@ def _build_annotated_image(bgr: np.ndarray, depth: np.ndarray) -> np.ndarray:
 
 
 class _LiveFeed(Node):
-    """Continuously updates `self.frame` with the latest camera image."""
+    """Continuously updates `self.frame` and `self.ultrasonic_range` with the latest readings."""
 
     def __init__(self, topic: str) -> None:
         super().__init__("depth_server_watch")
         self._bridge = CvBridge()
         self.frame: np.ndarray | None = None
+        self.ultrasonic_range: float | None = None
+        self.ultrasonic_stamp: float = 0.0
+        self.ultrasonic_min_range: float = 0.02
+        self.ultrasonic_max_range: float = 4.0
         self.create_subscription(Image, topic, self._cb, qos_profile_sensor_data)
+        self.create_subscription(
+            Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
+        )
 
     def _cb(self, msg: Image) -> None:
         self.frame = self._bridge.imgmsg_to_cv2(msg, "bgr8")
+
+    def _on_range(self, msg: Range) -> None:
+        self.ultrasonic_range = float(msg.range)
+        self.ultrasonic_stamp = time.monotonic()
+        self.ultrasonic_min_range = float(msg.min_range)
+        self.ultrasonic_max_range = float(msg.max_range)
+
+
+def _apply_ultrasonic_correction(
+    depth: np.ndarray, node: _LiveFeed
+) -> tuple[np.ndarray, float | None]:
+    """Rescale `depth` to match a fresh ultrasonic reading. See depth_bridge_node.py.
+
+    Returns (possibly-corrected depth, scale factor used or None if unchanged).
+    """
+    us_range = node.ultrasonic_range
+    us_age = time.monotonic() - node.ultrasonic_stamp
+    if us_range is None or us_age > ULTRASONIC_MAX_AGE:
+        return depth, None
+    if us_range <= node.ultrasonic_min_range or us_range >= node.ultrasonic_max_range:
+        return depth, None
+
+    h, w = depth.shape
+    half_h = max(1, int(h * ULTRASONIC_REGION_FRAC / 2))
+    half_w = max(1, int(w * ULTRASONIC_REGION_FRAC / 2))
+    cy, cx = h // 2, w // 2
+    region = depth[cy - half_h:cy + half_h, cx - half_w:cx + half_w]
+    valid = region[(region > 0) & np.isfinite(region)]
+    if valid.size < region.size * 0.1:
+        return depth, None
+
+    ai_center_estimate = float(valid.mean())
+    if ai_center_estimate <= 0:
+        return depth, None
+
+    scale = us_range / ai_center_estimate
+    scale = min(max(scale, CORRECTION_SCALE_MIN), CORRECTION_SCALE_MAX)
+    return (depth * scale).astype(np.float32), scale
 
 
 class _MjpegHandler(BaseHTTPRequestHandler):
@@ -181,7 +238,18 @@ def _infer_loop(node: _LiveFeed, url: str, timeout_s: float) -> None:
             continue
         try:
             depth, dt_ms = _post_and_decode(frame, url, timeout_s)
+            depth, scale = _apply_ultrasonic_correction(depth, node)
             combined = _build_annotated_image(frame, depth)
+
+            if scale is not None:
+                us_line = f"ultrasonic: {node.ultrasonic_range:.2f}m   scale: {scale:.2f}"
+            elif node.ultrasonic_range is not None:
+                us_line = (f"ultrasonic: {node.ultrasonic_range:.2f}m   "
+                           "(stale/out-of-range, no correction)")
+            else:
+                us_line = "ultrasonic: no reading (no correction)"
+            cv2.putText(combined, us_line, (6, combined.shape[0] - 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
             cv2.putText(combined, f"round-trip: {dt_ms:.0f} ms", (6, combined.shape[0] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
             _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 80])
