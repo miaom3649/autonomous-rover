@@ -69,7 +69,7 @@ public:
         sub_depth_.subscribe(this, "/rover/camera/depth",    rmw_qos_profile_sensor_data);
 
         sync_ = std::make_shared<Synchronizer>(SyncPolicy(10), sub_rgb_, sub_depth_);
-        sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.3));
+        sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.6));
         sync_->registerCallback(&OrbSlam3Node::on_images, this);
 
         pub_pose_  = create_publisher<geometry_msgs::msg::PoseStamped>("/orb_slam3/pose", 10);

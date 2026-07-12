@@ -23,6 +23,7 @@ setup(
             "stop_and_go_filter_node = rover_navigation.stop_and_go_filter_node:main",
             "slam_init_helper_node = rover_navigation.slam_init_helper_node:main",
             "depth_bridge_node = rover_navigation.depth_bridge_node:main",
+            "dashboard_node = rover_navigation.dashboard_node:main",
         ],
     },
 )

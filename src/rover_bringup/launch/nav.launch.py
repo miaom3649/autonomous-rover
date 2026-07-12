@@ -21,6 +21,16 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth_server_url", default_value="http://192.168.1.151:8765/depth",
                               description="URL of the Windows depth inference server"),
         DeclareLaunchArgument(
+            "dashboard_start_delay", default_value="5.0",
+            description=(
+                "Seconds to wait before starting dashboard_node (live camera/depth/"
+                "mode/ultrasonic/position web view on :8082). It's lightweight, but "
+                "starting it at t=0 alongside ORB-SLAM3's vocabulary load would still "
+                "add to the same startup memory spike this file already staggers "
+                "around, so it gets a small delay of its own rather than none."
+            ),
+        ),
+        DeclareLaunchArgument(
             "nav2_start_delay", default_value="45.0",
             description=(
                 "Seconds to wait before starting the Nav2 stack. On a 2GB Pi 4, "
@@ -122,6 +132,18 @@ def generate_launch_description() -> LaunchDescription:
             executable="mode_controller_node",
             name="mode_controller_node",
             remappings=[("/rover/cmd_vel_nav", "/rover/cmd_vel_nav_gated")],
+        ),
+
+        # ── Live debug dashboard (camera/depth/mode/ultrasonic/position on :8082) ──
+        TimerAction(
+            period=LaunchConfiguration("dashboard_start_delay"),
+            actions=[
+                Node(
+                    package="rover_navigation",
+                    executable="dashboard_node",
+                    name="dashboard_node",
+                ),
+            ],
         ),
 
         # ── Nav2 stack ────────────────────────────────────────────────────────

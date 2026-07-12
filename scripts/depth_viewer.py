@@ -13,10 +13,11 @@ forward-center estimate matches the ultrasonic reading), so what you see
 here matches what actually gets published for navigation. The current
 ultrasonic reading and correction scale are overlaid on the image.
 
-If nothing is already publishing the camera topic (e.g. nav.launch.py isn't
-running), this script starts a standalone `camera_node` itself and stops it
-again on exit — no need to launch the full stack just to test the depth
-server. Pass --no-camera to disable this and fail fast instead.
+If nothing is already publishing the camera topic or the ultrasonic topic
+(e.g. nav.launch.py isn't running), this script starts a standalone
+`camera_node` and/or `drive_node` itself and stops them again on exit — no
+need to launch the full stack just to test the depth server. Pass
+--no-camera / --no-drive to disable either and fail fast instead.
 
 Usage (on Pi):
     source /opt/ros/humble/setup.bash
@@ -29,6 +30,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -48,7 +50,7 @@ ULTRASONIC_MAX_AGE = 1.0
 ULTRASONIC_REGION_FRAC = 0.2
 
 
-def _camera_topic_has_publisher(topic: str) -> bool:
+def _topic_has_publisher(topic: str) -> bool:
     """Check for an existing publisher on `topic` via the CLI (no rclpy node needed)."""
     try:
         result = subprocess.run(
@@ -68,6 +70,20 @@ def _start_camera_node() -> subprocess.Popen:
     print("[camera_node] no publisher on the image topic — starting camera_node standalone...")
     return subprocess.Popen(
         ["ros2", "run", "rover_camera", "camera_node"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _start_drive_node() -> subprocess.Popen:
+    """Launch a standalone drive_node (the ultrasonic data source) — see depth_bridge_node.py
+    for why ultrasonic isn't its own node: it shares Picarx() with motor/servo control, so
+    only one process may hold it at a time. Don't run this alongside nav.launch.py.
+    """
+    print("[drive_node] no publisher on the ultrasonic topic — starting drive_node standalone...")
+    params_file = Path(__file__).resolve().parent.parent / "config" / "base_params.yaml"
+    return subprocess.Popen(
+        ["ros2", "run", "rover_base", "drive_node", "--ros-args",
+         "--params-file", str(params_file)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
@@ -267,6 +283,9 @@ def main() -> None:
                         help="HTTP request timeout in seconds")
     parser.add_argument("--no-camera", action="store_true",
                         help="Don't auto-start camera_node even if the topic has no publisher")
+    parser.add_argument("--no-drive", action="store_true",
+                        help="Don't auto-start drive_node even if the ultrasonic topic "
+                             "has no publisher")
     args = parser.parse_args()
 
     print("=== Depth Server Live Diagnostic ===")
@@ -275,8 +294,12 @@ def main() -> None:
     print()
 
     started_camera_proc = None
-    if not args.no_camera and not _camera_topic_has_publisher(args.topic):
+    if not args.no_camera and not _topic_has_publisher(args.topic):
         started_camera_proc = _start_camera_node()
+
+    started_drive_proc = None
+    if not args.no_drive and not _topic_has_publisher("/rover/ultrasonic/range"):
+        started_drive_proc = _start_drive_node()
 
     try:
         rclpy.init()
@@ -305,6 +328,13 @@ def main() -> None:
                 started_camera_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 started_camera_proc.kill()
+        if started_drive_proc is not None:
+            print("Stopping the drive_node we started...")
+            started_drive_proc.terminate()
+            try:
+                started_drive_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                started_drive_proc.kill()
 
 
 if __name__ == "__main__":

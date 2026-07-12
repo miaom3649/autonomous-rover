@@ -27,6 +27,7 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Range
+from std_msgs.msg import Float32
 
 
 class DepthBridgeNode(Node):
@@ -73,6 +74,9 @@ class DepthBridgeNode(Node):
         )
         self._pub_depth = self.create_publisher(
             Image, "/rover/camera/depth", qos_profile_sensor_data
+        )
+        self._pub_scale = self.create_publisher(
+            Float32, "/rover/camera/depth_correction_scale", qos_profile_sensor_data
         )
 
         self.create_timer(0.1, self._check_stop)
@@ -174,6 +178,7 @@ class DepthBridgeNode(Node):
             depth, scale = self._apply_ultrasonic_correction(depth)
             if scale is not None:
                 self.get_logger().debug(f"ultrasonic correction: scale={scale:.3f}")
+                self._pub_scale.publish(Float32(data=scale))
 
             depth_msg = self._bridge.cv2_to_imgmsg(depth, encoding="32FC1")
             depth_msg.header = frame_msg.header
