@@ -37,7 +37,7 @@ class DepthBridgeNode(Node):
         self.declare_parameter("depth_server_url", "http://192.168.1.100:8765/depth")
         self.declare_parameter("settle_delay", 0.5)
         self.declare_parameter("request_timeout", 0.8)
-        self.declare_parameter("ultrasonic_correction", True)
+        self.declare_parameter("ultrasonic_correction", False)
         self.declare_parameter("ultrasonic_max_age", 1.0)
         self.declare_parameter("ultrasonic_region_frac", 0.2)
 
