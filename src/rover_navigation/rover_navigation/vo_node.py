@@ -119,6 +119,13 @@ class VoNode(Node):
             Image, "/rover/camera/depth", self._on_depth, qos_profile_sensor_data
         )
 
+        # Publish the origin immediately, rather than waiting for the first
+        # depth-triggered cycle to succeed — otherwise base_link doesn't exist
+        # in the TF tree at all until then, and anything that queries it early
+        # (e.g. Nav2's costmaps) sees "frame does not exist" rather than just
+        # a stale-but-present transform.
+        self._publish(self.get_clock().now().to_msg(), dx=0.0, dy=0.0, dtheta=0.0)
+
         self.get_logger().info("vo_node ready")
 
     def _on_image(self, msg: Image) -> None:
@@ -163,7 +170,7 @@ class VoNode(Node):
         if self._prev_gray is None:
             self._prev_gray, self._prev_depth = gray, depth
             self._prev_kp, self._prev_des = kp, des
-            self._publish(msg, dx=0.0, dy=0.0, dtheta=0.0)
+            self._publish(msg.header.stamp, dx=0.0, dy=0.0, dtheta=0.0)
             return
 
         step = self._estimate_step(kp, des)
@@ -174,7 +181,7 @@ class VoNode(Node):
         if step is None:
             return
         dx, dy, dtheta = step
-        self._publish(msg, dx, dy, dtheta)
+        self._publish(msg.header.stamp, dx, dy, dtheta)
 
     def _estimate_step(self, kp, des) -> Optional[tuple[float, float, float]]:
         """Returns the (dx, dy, dtheta) step, or None on a degenerate/failed
@@ -263,7 +270,7 @@ class VoNode(Node):
             return None
         return d
 
-    def _publish(self, depth_msg: Image, dx: float, dy: float, dtheta: float) -> None:
+    def _publish(self, stamp, dx: float, dy: float, dtheta: float) -> None:
         # Compose the relative (dx, dy, dtheta) — expressed in the previous
         # base_link frame — onto the running world-frame (odom) pose.
         cos_yaw, sin_yaw = np.cos(self._yaw), np.sin(self._yaw)
@@ -272,7 +279,6 @@ class VoNode(Node):
         self._yaw += dtheta
 
         qz, qw = np.sin(self._yaw / 2.0), np.cos(self._yaw / 2.0)
-        stamp = depth_msg.header.stamp
 
         odom = Odometry()
         odom.header.stamp = stamp
