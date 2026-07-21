@@ -9,14 +9,16 @@ http://raspberrypi.local:8082 in a browser. Shows:
   - Current MANUAL/AUTO mode
   - Ultrasonic reading and the correction scale depth_bridge_node applied
   - The robot's estimated position, looked up from the map->base_link TF
-    (published by slam_toolbox — there's no /rover/odom topic since this
-    rover has no wheel odometry and localization is lidar-only)
+    (map->odom is a static identity — there's no absolute correction source
+    — and odom->base_link comes from vo_node.py's accumulated frame-to-frame
+    visual odometry, published on /rover/odom)
 
 Unlike scripts/depth_viewer.py (a standalone diagnostic that calls the
 depth server directly), this node only subscribes to already-published
 topics — it shows exactly what the rest of the stack is actually using,
 not a separate re-computation.
 """
+
 import math
 import threading
 import time
@@ -76,8 +78,16 @@ def _draw_region_grid(panel: np.ndarray, depth: np.ndarray) -> None:
             tx = x0 + (x1 - x0 - tw) // 2
             ty = y0 + (y1 - y0 + th) // 2
             cv2.rectangle(panel, (tx - 3, ty - th - 3), (tx + tw + 3, ty + 4), (0, 0, 0), -1)
-            cv2.putText(panel, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                        (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                panel,
+                label,
+                (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
 
 class _MjpegHandler(BaseHTTPRequestHandler):
@@ -131,7 +141,9 @@ class DashboardNode(Node):
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )
         self.create_subscription(
-            Float32, "/rover/camera/depth_correction_scale", self._on_scale,
+            Float32,
+            "/rover/camera/depth_correction_scale",
+            self._on_scale,
             qos_profile_sensor_data,
         )
 
@@ -187,13 +199,37 @@ class DashboardNode(Node):
                 depth_panel = cv2.resize(depth_panel, (w, h))
         else:
             depth_panel = np.zeros((h, w, 3), dtype=np.uint8)
-            cv2.putText(depth_panel, "no depth yet", (10, h // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                depth_panel,
+                "no depth yet",
+                (10, h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
-        cv2.putText(rgb_panel, "RGB", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(depth_panel, "Depth (as published, lidar-corrected)", (6, 16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            rgb_panel,
+            "RGB",
+            (6, 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            depth_panel,
+            "Depth (as published, ultrasonic-corrected)",
+            (6, 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
         combined = np.hstack([rgb_panel, depth_panel])
 
         now = time.monotonic()
@@ -214,8 +250,16 @@ class DashboardNode(Node):
 
         for i, text in enumerate((mode_text, us_text, pos_text)):
             y = combined.shape[0] - 8 - (2 - i) * 18
-            cv2.putText(combined, text, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                        (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                combined,
+                text,
+                (6, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 80])
         with _MjpegHandler.lock:
