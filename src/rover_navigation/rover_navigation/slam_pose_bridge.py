@@ -131,19 +131,34 @@ class SlamPoseBridge(Node):
             self.get_logger().info(
                 f"SLAM tracking OK — anchoring origin in {self._anchor_delay:.0f}s"
             )
-        elif msg.data == 0 and self._origin is not None:
-            # NO_IMAGES mid-mission: the Atlas gave up on the old map and
-            # started a brand new one. Its coordinates have no relation to
-            # the old map's, so keeping the old origin would produce
-            # garbage. Flag a re-anchor to the last known pose instead.
-            self._reanchor_pending = True
-            self.get_logger().warn(
-                "SLAM started a new map (old one lost for too long) — "
-                "will re-anchor to last known pose once tracking recovers"
-            )
-            self._first_ok_ns = None
         elif msg.data != 2:
-            # tracking lost — reset so we re-anchor after next recovery
+            # Any drop from OK — always flag a re-anchor on the next
+            # recovery, not just when we happen to observe state==NO_IMAGES.
+            # ORB-SLAM3 can give up on the old map and reset+reinitialize a
+            # brand new one entirely *within* a single TrackRGBD() call (see
+            # orb_slam3_node.cpp), so /orb_slam3/state — polled only after
+            # that call returns — never surfaces NO_IMAGES as an observable
+            # intermediate transition here: we go straight from LOST to OK
+            # having already missed that the Atlas was replaced. Previously
+            # this only re-anchored when msg.data == 0 was actually seen,
+            # which this silent-reset case never triggers — so the old
+            # origin kept getting subtracted from a brand new map's raw
+            # coordinates every cycle, publishing near-identical
+            # near-(0,0,0) "positions" that were really just leftover
+            # coincidence, each one still satisfying stop_and_go_filter_node's
+            # "fresh fix" check and letting the rover keep driving with no
+            # real position tracking at all. Re-anchoring on every recovery
+            # is conservative — a true same-map relocalization gets treated
+            # as if no motion happened during the loss window — but that's
+            # the safe failure mode here, not silently trusting a
+            # potentially unrelated coordinate frame as continuous.
+            if self._origin is not None and not self._reanchor_pending:
+                self._reanchor_pending = True
+                self.get_logger().warn(
+                    "SLAM tracking dropped — will re-anchor to last known "
+                    "pose once tracking recovers (conservatively assumes "
+                    "the map may have been silently reset)"
+                )
             self._first_ok_ns = None
 
     def _on_pose(self, msg: PoseStamped) -> None:

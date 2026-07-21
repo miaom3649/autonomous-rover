@@ -8,6 +8,7 @@
   <license>MIT</license>
 
   <exec_depend>rover_base</exec_depend>
+  <exec_depend>rover_camera</exec_depend>
   <exec_depend>rover_navigation</exec_depend>
   <exec_depend>rover_slam</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>

@@ -4,8 +4,12 @@ Live rover dashboard — runs on the Pi as part of nav.launch.py.
 Subscribes to the camera, corrected depth, mode, and ultrasonic topics and
 serves a combined view as MJPEG over HTTP for debugging — open
 http://raspberrypi.local:8082 in a browser. Shows:
-  - RGB camera feed (left) and the corrected depth map (right), the depth
-    panel annotated with the same per-region grid as scripts/depth_viewer.py
+  - RGB camera feed (left), the corrected depth map (middle) annotated with
+    the same per-region grid as scripts/depth_viewer.py, and ORB-SLAM3's own
+    debug view (right, if orb_slam3_node is running and publishing) — tracked
+    keypoints overlaid on the current frame, green when tracking is OK and
+    red otherwise, with the tracking state and keypoint count as drawn by
+    orb_slam3_node.cpp itself
   - Current MANUAL/AUTO mode
   - Ultrasonic reading and the correction scale depth_bridge_node applied
   - The robot's estimated position, looked up from the map->base_link TF
@@ -123,6 +127,8 @@ class DashboardNode(Node):
 
         self._rgb: np.ndarray | None = None
         self._depth: np.ndarray | None = None
+        self._slam_debug: np.ndarray | None = None
+        self._slam_debug_stamp = 0.0
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
         self._ultrasonic_stamp = 0.0
@@ -137,6 +143,9 @@ class DashboardNode(Node):
         )
         self.create_subscription(
             Image, "/rover/camera/depth", self._on_depth, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            Image, "/orb_slam3/debug_image", self._on_slam_debug, qos_profile_sensor_data
         )
         self.create_subscription(String, "/rover/current_mode", self._on_mode, 10)
         self.create_subscription(
@@ -158,6 +167,10 @@ class DashboardNode(Node):
 
     def _on_depth(self, msg: Image) -> None:
         self._depth = self._bridge.imgmsg_to_cv2(msg, "32FC1")
+
+    def _on_slam_debug(self, msg: Image) -> None:
+        self._slam_debug = self._bridge.imgmsg_to_cv2(msg, "bgr8")
+        self._slam_debug_stamp = time.monotonic()
 
     def _on_mode(self, msg: String) -> None:
         self._mode = msg.data
@@ -236,9 +249,26 @@ class DashboardNode(Node):
             1,
             cv2.LINE_AA,
         )
-        combined = np.hstack([rgb_panel, depth_panel])
 
         now = time.monotonic()
+        if self._slam_debug is not None and now - self._slam_debug_stamp < STALE_AFTER_S:
+            slam_panel = self._slam_debug.copy()
+            if slam_panel.shape[:2] != (h, w):
+                slam_panel = cv2.resize(slam_panel, (w, h))
+        else:
+            slam_panel = np.zeros((h, w, 3), dtype=np.uint8)
+            cv2.putText(
+                slam_panel,
+                "no SLAM debug image yet",
+                (10, h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        combined = np.hstack([rgb_panel, depth_panel, slam_panel])
+
         if self._ultrasonic_range is not None and now - self._ultrasonic_stamp < STALE_AFTER_S:
             us_text = f"ultrasonic: {self._ultrasonic_range:.2f}m"
             if self._scale is not None and now - self._scale_stamp < STALE_AFTER_S:
