@@ -32,6 +32,7 @@ from tf2_ros import TransformBroadcaster
 
 from rover_navigation.vo_math import (
     camera_delta_to_base_link_delta,
+    is_well_conditioned,
     solve_relative_pose,
     unproject,
 )
@@ -39,6 +40,7 @@ from rover_navigation.vo_math import (
 DEFAULT_MIN_MATCHES = 15
 DEFAULT_MIN_INLIERS = 8
 DEFAULT_MAX_STEP_TRANSLATION_M = 1.0
+DEFAULT_MAX_DEPTH_M = 6.0
 
 
 class VoNode(Node):
@@ -56,6 +58,7 @@ class VoNode(Node):
         self.declare_parameter("min_matches", DEFAULT_MIN_MATCHES)
         self.declare_parameter("min_inliers", DEFAULT_MIN_INLIERS)
         self.declare_parameter("max_step_translation_m", DEFAULT_MAX_STEP_TRANSLATION_M)
+        self.declare_parameter("max_depth_m", DEFAULT_MAX_DEPTH_M)
 
         fx = float(self.get_parameter("fx").value)
         fy = float(self.get_parameter("fy").value)
@@ -76,6 +79,7 @@ class VoNode(Node):
         self._min_matches = int(self.get_parameter("min_matches").value)
         self._min_inliers = int(self.get_parameter("min_inliers").value)
         self._max_step = float(self.get_parameter("max_step_translation_m").value)
+        self._max_depth = float(self.get_parameter("max_depth_m").value)
 
         self._bridge = CvBridge()
         self._orb = cv2.ORB_create(nfeatures=500)
@@ -156,8 +160,16 @@ class VoNode(Node):
             self.get_logger().warn("VO step skipped: too few matches had valid depth")
             return 0.0, 0.0, 0.0
 
+        object_points_arr = np.array(object_points)
+        if not is_well_conditioned(object_points_arr):
+            self.get_logger().warn(
+                "VO step skipped: matched points too close to coplanar "
+                "(insufficient depth spread) for a stable PnP solve"
+            )
+            return 0.0, 0.0, 0.0
+
         result = solve_relative_pose(
-            np.array(object_points),
+            object_points_arr,
             np.array(image_points),
             self._camera_matrix,
             self._dist_coeffs,
@@ -183,7 +195,7 @@ class VoNode(Node):
         if not (0 <= iu < w and 0 <= iv < h):
             return None
         d = float(depth[iv, iu])
-        if not np.isfinite(d) or d <= 0:
+        if not np.isfinite(d) or d <= 0 or d > self._max_depth:
             return None
         return d
 

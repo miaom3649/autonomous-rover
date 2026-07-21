@@ -16,7 +16,12 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "src", "rover_navigation", "rover_navigation"),
 )
 
-from vo_math import camera_delta_to_base_link_delta, solve_relative_pose, unproject  # noqa: E402
+from vo_math import (  # noqa: E402
+    camera_delta_to_base_link_delta,
+    is_well_conditioned,
+    solve_relative_pose,
+    unproject,
+)
 
 CAMERA_MATRIX = np.array(
     [[321.03, 0.0, 156.39], [0.0, 320.50, 116.02], [0.0, 0.0, 1.0]], dtype=np.float64
@@ -106,3 +111,17 @@ def test_solve_relative_pose_returns_none_with_too_few_points():
     points_prev = np.zeros((3, 3))
     points_curr = np.zeros((3, 2))
     assert solve_relative_pose(points_prev, points_curr, CAMERA_MATRIX, ZERO_DIST) is None
+
+
+def test_is_well_conditioned_rejects_near_planar_points():
+    rng = np.random.default_rng(2)
+    x = rng.uniform(-1.0, 1.0, 40)
+    y = rng.uniform(-0.5, 0.5, 40)
+    z = np.full(40, 2.0) + rng.uniform(-0.01, 0.01, 40)  # a flat wall, ~2m out
+    flat_points = np.stack([x, y, z], axis=1)
+    assert is_well_conditioned(flat_points) is False
+
+
+def test_is_well_conditioned_accepts_points_with_real_depth_spread():
+    points_prev = _synthetic_points(40, np.random.default_rng(3))
+    assert is_well_conditioned(points_prev) is True

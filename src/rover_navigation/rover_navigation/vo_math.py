@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 DEFAULT_MIN_INLIERS = 8
+DEFAULT_MIN_DEPTH_SPREAD_M = 0.15
 
 
 def unproject(
@@ -18,6 +19,23 @@ def unproject(
     """Back-project a pixel + depth into a 3D point in the camera's optical
     frame (X-right, Y-down, Z-forward)."""
     return np.array([(u - cx) * depth / fx, (v - cy) * depth / fy, depth], dtype=np.float64)
+
+
+def is_well_conditioned(
+    object_points: np.ndarray, min_depth_spread: float = DEFAULT_MIN_DEPTH_SPREAD_M
+) -> bool:
+    """PnP solves become numerically unstable when the 3D points are nearly
+    coplanar — a well-known PnP degenerate configuration. A common case here
+    is a flat wall filling most of the frame, where every matched point
+    sits at nearly the same depth: tiny pixel-level match noise then gets
+    amplified into huge or wildly wrong translation estimates. Reject such
+    point sets up front rather than let PnP fit an unstable transform to
+    them.
+    """
+    if len(object_points) < 4:
+        return False
+    depth_spread = float(object_points[:, 2].max() - object_points[:, 2].min())
+    return depth_spread >= min_depth_spread
 
 
 def solve_relative_pose(
