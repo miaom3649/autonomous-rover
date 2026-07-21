@@ -44,6 +44,8 @@ PORT = 8082
 GRID_ROWS = 3
 GRID_COLS = 4
 STALE_AFTER_S = 2.0
+_ANSI_YELLOW = "\033[33m"
+_ANSI_RESET = "\033[0m"
 
 
 def _colorize_depth(depth: np.ndarray) -> np.ndarray:
@@ -181,10 +183,14 @@ class DashboardNode(Node):
     def _log_pose(self) -> None:
         pose = self._lookup_pose()
         if pose is None:
-            self.get_logger().info("pose  no map->base_link transform yet")
+            self.get_logger().info(
+                f"{_ANSI_YELLOW}pose  no map->base_link transform yet{_ANSI_RESET}"
+            )
             return
         x, y, yaw_deg = pose
-        self.get_logger().info(f"pose  x={x:+.3f}  y={y:+.3f}  yaw={yaw_deg:+.1f}°")
+        self.get_logger().info(
+            f"{_ANSI_YELLOW}pose  x={x:+.3f}  y={y:+.3f}  yaw={yaw_deg:+.1f}°{_ANSI_RESET}"
+        )
 
     def _render(self) -> None:
         if self._rgb is None:

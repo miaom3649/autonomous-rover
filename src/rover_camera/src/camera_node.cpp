@@ -153,10 +153,15 @@ private:
             on_request_completed(req);
         });
 
+        // Auto-exposure: frames are only ever captured while the rover is
+        // stationary (settle_delay_ below, plus depth_bridge_node/vo_node's
+        // own stop-triggered fetch), so motion blur from a longer exposure
+        // isn't a concern — and a fixed exposure/gain doesn't adapt across
+        // the different rooms/lighting this rover gets tested in, which
+        // previously produced underexposed frames with too few ORB features
+        // for vo_node to match.
         ControlList controls(camera_->controls());
-        controls.set(controls::AeEnable, false);
-        controls.set(controls::ExposureTime, 8000);      // 8 ms
-        controls.set(controls::AnalogueGain, 8.0f);
+        controls.set(controls::AeEnable, true);
 
         if (camera_->start(&controls) != 0) {
             RCLCPP_ERROR(get_logger(), "Camera::start() failed");

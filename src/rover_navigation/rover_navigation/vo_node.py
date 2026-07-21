@@ -10,17 +10,23 @@ pixel positions now directly recovers the camera's metric relative motion
 in one step (no separate essential-matrix-plus-scale-guess pass needed,
 since every point already carries its own depth).
 
-The result is accumulated into a running pose and published as
-/rover/odom + the odom->base_link TF, replacing the old static-identity
-placeholder now that there's a real (if drifting, uncorrected) motion
-estimate. stop_and_go_filter_node.py waits for a fresh /rover/odom message
-before letting the rover move again — which only works as a real safety
-check because this node publishes *only* on a genuine successful update
-(or the very first trigger, which establishes the origin). A failed or
-degenerate step publishes nothing at all: if it instead published a
-"no motion" fallback, stop_and_go_filter_node would treat that as
-confirmation and keep driving blind whenever VO can't actually measure
+The result is accumulated into a running pose, published on /rover/odom.
+stop_and_go_filter_node.py waits for a fresh /rover/odom message before
+letting the rover move again — which only works as a real safety check
+because this node publishes to that topic *only* on a genuine successful
+update (or the very first trigger, which establishes the origin). A failed
+or degenerate step publishes nothing to /rover/odom at all: if it instead
+published a "no motion" fallback, stop_and_go_filter_node would treat that
+as confirmation and keep driving blind whenever VO can't actually measure
 anything, defeating the whole point of waiting for a fix.
+
+The odom->base_link TF is a separate concern, broadcast on its own steady
+timer regardless of whether a fresh measurement just landed: ROS2 doesn't
+replay dynamic (non-static) TF history to late subscribers, so anything
+that only broadcasts on real updates leaves base_link entirely missing
+from the TF tree to any listener that started up during a gap — e.g. Nav2's
+costmaps, which start well after this node and would otherwise see
+"frame does not exist" instead of a merely-stale-but-present transform.
 """
 
 from collections import deque
@@ -51,6 +57,7 @@ DEFAULT_MAX_DEPTH_M = 6.0
 DEFAULT_MATCH_RATIO = 0.75
 DEFAULT_FRAME_MATCH_TOLERANCE_S = 0.15
 RGB_BUFFER_SIZE = 20
+TF_BROADCAST_PERIOD_S = 0.1
 
 
 class VoNode(Node):
@@ -119,12 +126,10 @@ class VoNode(Node):
             Image, "/rover/camera/depth", self._on_depth, qos_profile_sensor_data
         )
 
-        # Publish the origin immediately, rather than waiting for the first
-        # depth-triggered cycle to succeed — otherwise base_link doesn't exist
-        # in the TF tree at all until then, and anything that queries it early
-        # (e.g. Nav2's costmaps) sees "frame does not exist" rather than just
-        # a stale-but-present transform.
-        self._publish(self.get_clock().now().to_msg(), dx=0.0, dy=0.0, dtheta=0.0)
+        # Broadcast the TF immediately and then on a steady timer (see module
+        # docstring) — independent of whether a real VO update ever lands.
+        self._broadcast_tf()
+        self.create_timer(TF_BROADCAST_PERIOD_S, self._broadcast_tf)
 
         self.get_logger().info("vo_node ready")
 
@@ -170,7 +175,7 @@ class VoNode(Node):
         if self._prev_gray is None:
             self._prev_gray, self._prev_depth = gray, depth
             self._prev_kp, self._prev_des = kp, des
-            self._publish(msg.header.stamp, dx=0.0, dy=0.0, dtheta=0.0)
+            self._publish_odom(msg.header.stamp, dx=0.0, dy=0.0, dtheta=0.0)
             return
 
         step = self._estimate_step(kp, des)
@@ -181,7 +186,7 @@ class VoNode(Node):
         if step is None:
             return
         dx, dy, dtheta = step
-        self._publish(msg.header.stamp, dx, dy, dtheta)
+        self._publish_odom(msg.header.stamp, dx, dy, dtheta)
 
     def _estimate_step(self, kp, des) -> Optional[tuple[float, float, float]]:
         """Returns the (dx, dy, dtheta) step, or None on a degenerate/failed
@@ -270,7 +275,11 @@ class VoNode(Node):
             return None
         return d
 
-    def _publish(self, stamp, dx: float, dy: float, dtheta: float) -> None:
+    def _publish_odom(self, stamp, dx: float, dy: float, dtheta: float) -> None:
+        """Update the running pose from a confirmed VO step (or the initial
+        origin) and publish it on /rover/odom — the confirmation signal
+        stop_and_go_filter_node waits for. Does not touch the TF; that's
+        _broadcast_tf's job, on its own steady timer."""
         # Compose the relative (dx, dy, dtheta) — expressed in the previous
         # base_link frame — onto the running world-frame (odom) pose.
         cos_yaw, sin_yaw = np.cos(self._yaw), np.sin(self._yaw)
@@ -290,8 +299,13 @@ class VoNode(Node):
         odom.pose.pose.orientation.w = qw
         self._pub_odom.publish(odom)
 
+    def _broadcast_tf(self) -> None:
+        """Re-broadcast the current (possibly unchanged) pose as the
+        odom->base_link TF. Runs on a steady timer independent of VO
+        updates — see module docstring for why."""
+        qz, qw = np.sin(self._yaw / 2.0), np.cos(self._yaw / 2.0)
         tf_msg = TransformStamped()
-        tf_msg.header.stamp = stamp
+        tf_msg.header.stamp = self.get_clock().now().to_msg()
         tf_msg.header.frame_id = "odom"
         tf_msg.child_frame_id = "base_link"
         tf_msg.transform.translation.x = self._x
