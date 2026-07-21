@@ -42,7 +42,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "depth_server_url",
-                default_value="http://192.168.1.151:8765/depth",
+                default_value="http://192.168.3.33:8765/depth",
                 description="URL of the Windows depth inference server",
             ),
             Node(
