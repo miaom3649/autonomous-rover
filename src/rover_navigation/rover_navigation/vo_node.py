@@ -14,7 +14,13 @@ The result is accumulated into a running pose and published as
 /rover/odom + the odom->base_link TF, replacing the old static-identity
 placeholder now that there's a real (if drifting, uncorrected) motion
 estimate. stop_and_go_filter_node.py waits for a fresh /rover/odom message
-before letting the rover move again.
+before letting the rover move again — which only works as a real safety
+check because this node publishes *only* on a genuine successful update
+(or the very first trigger, which establishes the origin). A failed or
+degenerate step publishes nothing at all: if it instead published a
+"no motion" fallback, stop_and_go_filter_node would treat that as
+confirmation and keep driving blind whenever VO can't actually measure
+anything, defeating the whole point of waiting for a fix.
 """
 
 from collections import deque
@@ -135,14 +141,19 @@ class VoNode(Node):
         return best_rgb
 
     def _on_depth(self, msg: Image) -> None:
-        """Each new corrected depth map is a trigger: one VO step per stop cycle."""
+        """Each new corrected depth map is a trigger: one VO step per stop cycle.
+
+        Only publishes /rover/odom on a genuine successful update (or the very
+        first trigger, which establishes the origin) — see module docstring
+        for why a failed step must publish nothing rather than a "no motion"
+        fallback.
+        """
         target_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         rgb = self._find_matching_rgb(target_stamp)
         if rgb is None:
             self.get_logger().warn(
                 "VO step skipped: no cached RGB frame matches this depth map's capture time"
             )
-            self._publish(msg, dx=0.0, dy=0.0, dtheta=0.0)
             return
 
         depth = self._bridge.imgmsg_to_cv2(msg, "32FC1")
@@ -155,24 +166,28 @@ class VoNode(Node):
             self._publish(msg, dx=0.0, dy=0.0, dtheta=0.0)
             return
 
-        dx, dy, dtheta = self._estimate_step(kp, des)
+        step = self._estimate_step(kp, des)
 
         self._prev_gray, self._prev_depth = gray, depth
         self._prev_kp, self._prev_des = kp, des
+
+        if step is None:
+            return
+        dx, dy, dtheta = step
         self._publish(msg, dx, dy, dtheta)
 
-    def _estimate_step(self, kp, des) -> tuple[float, float, float]:
-        """Returns the (dx, dy, dtheta) step, or (0, 0, 0) — "assume no motion" —
-        on a degenerate step, so a bad match doesn't block stop_and_go_filter_node's
-        wait for a fresh /rover/odom (see module docstring)."""
+    def _estimate_step(self, kp, des) -> Optional[tuple[float, float, float]]:
+        """Returns the (dx, dy, dtheta) step, or None on a degenerate/failed
+        step. A None result means this cycle publishes nothing at all — see
+        module docstring for why that matters."""
         if des is None or self._prev_des is None or len(des) < self._min_matches:
             self.get_logger().warn("VO step skipped: too few ORB features detected")
-            return 0.0, 0.0, 0.0
+            return None
 
         matches = self._match_features(des)
         if len(matches) < self._min_matches:
             self.get_logger().warn("VO step skipped: too few ORB matches")
-            return 0.0, 0.0, 0.0
+            return None
 
         fx, fy = self._camera_matrix[0, 0], self._camera_matrix[1, 1]
         cx, cy = self._camera_matrix[0, 2], self._camera_matrix[1, 2]
@@ -188,7 +203,7 @@ class VoNode(Node):
 
         if len(object_points) < self._min_matches:
             self.get_logger().warn("VO step skipped: too few matches had valid depth")
-            return 0.0, 0.0, 0.0
+            return None
 
         object_points_arr = np.array(object_points)
         if not is_well_conditioned(object_points_arr):
@@ -196,7 +211,7 @@ class VoNode(Node):
                 "VO step skipped: matched points too close to coplanar "
                 "(insufficient depth spread) for a stable PnP solve"
             )
-            return 0.0, 0.0, 0.0
+            return None
 
         result = solve_relative_pose(
             object_points_arr,
@@ -207,7 +222,7 @@ class VoNode(Node):
         )
         if result is None:
             self.get_logger().warn("VO step skipped: PnP failed / too few inliers")
-            return 0.0, 0.0, 0.0
+            return None
 
         rotation, translation, _num_inliers = result
         dx, dy, dtheta = camera_delta_to_base_link_delta(rotation, translation)
@@ -216,7 +231,7 @@ class VoNode(Node):
                 f"VO step skipped: implausible displacement "
                 f"{np.hypot(dx, dy):.2f}m > {self._max_step}m"
             )
-            return 0.0, 0.0, 0.0
+            return None
         return dx, dy, dtheta
 
     def _match_features(self, des) -> list:
