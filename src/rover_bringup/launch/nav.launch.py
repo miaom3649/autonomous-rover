@@ -55,7 +55,19 @@ def generate_launch_description() -> LaunchDescription:
                 package="rover_camera",
                 executable="camera_node",
                 name="camera_node",
-                parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
+                parameters=[
+                    {
+                        "use_sim": use_sim,
+                        "frame_width": 320,
+                        "frame_height": 240,
+                        # Only ever one frame is used per stop cycle (see
+                        # depth_bridge_node.py / vo_node.py) — a low rate cuts
+                        # wasted capture/publish CPU and shrinks the window
+                        # where a new frame could land mid-depth-round-trip
+                        # and get mismatched against the wrong depth map.
+                        "publish_rate_hz": 2.0,
+                    }
+                ],
             ),
             # ── Depth bridge (camera+AI depth, ultrasonic-corrected) ────────────────
             Node(

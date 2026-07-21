@@ -17,6 +17,7 @@ estimate. stop_and_go_filter_node.py waits for a fresh /rover/odom message
 before letting the rover move again.
 """
 
+from collections import deque
 from typing import Optional
 
 import cv2
@@ -41,6 +42,9 @@ DEFAULT_MIN_MATCHES = 15
 DEFAULT_MIN_INLIERS = 8
 DEFAULT_MAX_STEP_TRANSLATION_M = 1.0
 DEFAULT_MAX_DEPTH_M = 6.0
+DEFAULT_MATCH_RATIO = 0.75
+DEFAULT_FRAME_MATCH_TOLERANCE_S = 0.15
+RGB_BUFFER_SIZE = 20
 
 
 class VoNode(Node):
@@ -59,6 +63,8 @@ class VoNode(Node):
         self.declare_parameter("min_inliers", DEFAULT_MIN_INLIERS)
         self.declare_parameter("max_step_translation_m", DEFAULT_MAX_STEP_TRANSLATION_M)
         self.declare_parameter("max_depth_m", DEFAULT_MAX_DEPTH_M)
+        self.declare_parameter("match_ratio", DEFAULT_MATCH_RATIO)
+        self.declare_parameter("frame_match_tolerance_s", DEFAULT_FRAME_MATCH_TOLERANCE_S)
 
         fx = float(self.get_parameter("fx").value)
         fy = float(self.get_parameter("fy").value)
@@ -80,12 +86,14 @@ class VoNode(Node):
         self._min_inliers = int(self.get_parameter("min_inliers").value)
         self._max_step = float(self.get_parameter("max_step_translation_m").value)
         self._max_depth = float(self.get_parameter("max_depth_m").value)
+        self._match_ratio = float(self.get_parameter("match_ratio").value)
+        self._frame_match_tolerance = float(self.get_parameter("frame_match_tolerance_s").value)
 
         self._bridge = CvBridge()
         self._orb = cv2.ORB_create(nfeatures=500)
-        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
 
-        self._latest_rgb: Optional[np.ndarray] = None
+        self._rgb_buffer: deque = deque(maxlen=RGB_BUFFER_SIZE)
         self._prev_gray: Optional[np.ndarray] = None
         self._prev_depth: Optional[np.ndarray] = None
         self._prev_kp = None
@@ -108,13 +116,35 @@ class VoNode(Node):
         self.get_logger().info("vo_node ready")
 
     def _on_image(self, msg: Image) -> None:
-        self._latest_rgb = self._bridge.imgmsg_to_cv2(msg, "rgb8")
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self._rgb_buffer.append((stamp, self._bridge.imgmsg_to_cv2(msg, "rgb8")))
+
+    def _find_matching_rgb(self, target_stamp: float) -> Optional[np.ndarray]:
+        """depth_bridge_node's AI depth round-trip can take up to ~0.8s, during
+        which newer camera frames may already have arrived — so "whatever RGB is
+        cached right now" is not necessarily the same frame the depth map was
+        computed from. Look up the buffered frame whose timestamp actually
+        matches the depth message's (which carries the original frame's stamp,
+        see depth_bridge_node.py), instead of silently pairing mismatched data.
+        """
+        if not self._rgb_buffer:
+            return None
+        best_stamp, best_rgb = min(self._rgb_buffer, key=lambda item: abs(item[0] - target_stamp))
+        if abs(best_stamp - target_stamp) > self._frame_match_tolerance:
+            return None
+        return best_rgb
 
     def _on_depth(self, msg: Image) -> None:
         """Each new corrected depth map is a trigger: one VO step per stop cycle."""
-        rgb = self._latest_rgb
+        target_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        rgb = self._find_matching_rgb(target_stamp)
         if rgb is None:
+            self.get_logger().warn(
+                "VO step skipped: no cached RGB frame matches this depth map's capture time"
+            )
+            self._publish(msg, dx=0.0, dy=0.0, dtheta=0.0)
             return
+
         depth = self._bridge.imgmsg_to_cv2(msg, "32FC1")
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         kp, des = self._orb.detectAndCompute(gray, None)
@@ -139,7 +169,7 @@ class VoNode(Node):
             self.get_logger().warn("VO step skipped: too few ORB features detected")
             return 0.0, 0.0, 0.0
 
-        matches = self._matcher.match(self._prev_des, des)
+        matches = self._match_features(des)
         if len(matches) < self._min_matches:
             self.get_logger().warn("VO step skipped: too few ORB matches")
             return 0.0, 0.0, 0.0
@@ -188,6 +218,25 @@ class VoNode(Node):
             )
             return 0.0, 0.0, 0.0
         return dx, dy, dtheta
+
+    def _match_features(self, des) -> list:
+        """Match against the previous frame's descriptors using Lowe's ratio
+        test: a match is only kept if its best candidate is meaningfully
+        closer than the second-best. Repetitive or low-texture-diversity
+        scenes (tiled floors, patterned surfaces) otherwise produce
+        confident-looking but wrong correspondences that a plain
+        nearest-neighbor match (or crossCheck alone) won't catch, and PnP
+        will happily fit an unstable, wrong transform to them.
+        """
+        knn_matches = self._matcher.knnMatch(self._prev_des, des, k=2)
+        good_matches = []
+        for pair in knn_matches:
+            if len(pair) != 2:
+                continue
+            best, second = pair
+            if best.distance < self._match_ratio * second.distance:
+                good_matches.append(best)
+        return good_matches
 
     def _sample_depth(self, depth: np.ndarray, u: float, v: float) -> Optional[float]:
         h, w = depth.shape
