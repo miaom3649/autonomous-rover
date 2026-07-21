@@ -14,9 +14,12 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point32.hpp>
 
 #include <System.h>
+#include <MapPoint.h>
 
 static const char * state_name(int s)
 {
@@ -76,6 +79,8 @@ public:
         pub_state_ = create_publisher<std_msgs::msg::Int32>("/orb_slam3/state", 10);
         pub_debug_ = create_publisher<sensor_msgs::msg::Image>(
             "/orb_slam3/debug_image", rclcpp::SensorDataQoS());
+        pub_map_points_ = create_publisher<sensor_msgs::msg::PointCloud>(
+            "/orb_slam3/map_points", rclcpp::SensorDataQoS());
 
         RCLCPP_INFO(get_logger(), "ORB-SLAM3 RGBD node ready");
     }
@@ -186,6 +191,37 @@ private:
         out.pose.orientation.w = q.w();
 
         pub_pose_->publish(out);
+
+        if (pub_map_points_->get_subscription_count() > 0) {
+            publish_map_points(slam_->GetTrackedMapPoints(), rgb_msg->header);
+        }
+    }
+
+    void publish_map_points(
+        const std::vector<ORB_SLAM3::MapPoint *> & map_points,
+        const std_msgs::msg::Header & header)
+    {
+        // Raw SLAM world-frame points (X-right, Y-down, Z-forward — see
+        // slam_pose_bridge.py's coordinate-frame comment block), not
+        // rotated into the robot frame: this is purely for eyeballing map
+        // quality (slam_preview.launch.py), not for navigation, so
+        // dashboard_node.py just projects (X, Z) directly for a top-down view.
+        sensor_msgs::msg::PointCloud out;
+        out.header = header;
+        out.header.frame_id = "map";
+        out.points.reserve(map_points.size());
+        for (auto * mp : map_points) {
+            if (!mp || mp->isBad()) {
+                continue;
+            }
+            const Eigen::Vector3f pos = mp->GetWorldPos();
+            geometry_msgs::msg::Point32 p;
+            p.x = pos.x();
+            p.y = pos.y();
+            p.z = pos.z();
+            out.points.push_back(p);
+        }
+        pub_map_points_->publish(out);
     }
 
     void publish_debug(
@@ -230,6 +266,7 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_pose_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_state_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_debug_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr pub_map_points_;
 
     int      prev_state_{-1};
     uint64_t frame_count_{0};

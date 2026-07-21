@@ -3,13 +3,17 @@ Live rover dashboard — runs on the Pi as part of nav.launch.py.
 
 Subscribes to the camera, corrected depth, mode, and ultrasonic topics and
 serves a combined view as MJPEG over HTTP for debugging — open
-http://raspberrypi.local:8082 in a browser. Shows:
-  - RGB camera feed (left), the corrected depth map (middle) annotated with
-    the same per-region grid as scripts/depth_viewer.py, and ORB-SLAM3's own
-    debug view (right, if orb_slam3_node is running and publishing) — tracked
-    keypoints overlaid on the current frame, green when tracking is OK and
-    red otherwise, with the tracking state and keypoint count as drawn by
-    orb_slam3_node.cpp itself
+http://raspberrypi.local:8082 in a browser. Shows a 2x2 grid:
+  - Top row: RGB camera feed, and the corrected depth map annotated with the
+    same per-region grid as scripts/depth_viewer.py
+  - Bottom row: ORB-SLAM3's own debug view (tracked keypoints on the current
+    frame, green when tracking is OK and red otherwise — drawn by
+    orb_slam3_node.cpp itself), and a live top-down scatter plot of
+    ORB-SLAM3's accumulated map points (/orb_slam3/map_points) — points seen
+    across the whole run, not just the current frame, so map coverage/shape
+    builds up visually as you walk the rover around. Both bottom panels are
+    blank placeholders until orb_slam3_node is actually running and
+    publishing (e.g. slam_preview.launch.py).
   - Current MANUAL/AUTO mode
   - Ultrasonic reading and the correction scale depth_bridge_node applied
   - The robot's estimated position, looked up from the map->base_link TF
@@ -34,7 +38,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image, Range
+from sensor_msgs.msg import Image, PointCloud, Range
 from std_msgs.msg import Float32, String
 from tf2_ros import (
     Buffer,
@@ -48,6 +52,7 @@ PORT = 8082
 GRID_ROWS = 3
 GRID_COLS = 4
 STALE_AFTER_S = 2.0
+MAX_MAP_POINTS = 20000
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 
@@ -96,6 +101,60 @@ def _draw_region_grid(panel: np.ndarray, depth: np.ndarray) -> None:
             )
 
 
+def _render_map_panel(points: list[tuple[float, float]], h: int, w: int) -> np.ndarray:
+    """Top-down scatter plot of accumulated ORB-SLAM3 map points.
+
+    `points` are (x, z) in the SLAM world frame (X-right, Z-forward — see
+    slam_pose_bridge.py's coordinate-frame comment block), which is exactly
+    a top-down view when the camera stays roughly level. Auto-scaled to fit
+    every point seen so far, so the plot zooms out as the covered area grows.
+    """
+    panel = np.zeros((h, w, 3), dtype=np.uint8)
+    if len(points) < 2:
+        cv2.putText(
+            panel,
+            "no map points yet",
+            (10, h // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return panel
+
+    pts = np.array(points, dtype=np.float32)
+    xs, zs = pts[:, 0], pts[:, 1]
+    margin = 20
+    x_range = max(float(xs.max() - xs.min()), 0.1)
+    z_range = max(float(zs.max() - zs.min()), 0.1)
+    scale = min((w - 2 * margin) / x_range, (h - 2 * margin) / z_range)
+
+    px = ((xs - xs.min()) * scale + margin).astype(np.int32)
+    # Flip vertically so "forward" (+Z) points up on screen.
+    pz = (h - margin - (zs - zs.min()) * scale).astype(np.int32)
+    np.clip(px, 0, w - 1, out=px)
+    np.clip(pz, 0, h - 1, out=pz)
+    panel[pz, px] = (0, 220, 255)
+
+    ox = int((0.0 - xs.min()) * scale + margin)
+    oz = int(h - margin - (0.0 - zs.min()) * scale)
+    if 0 <= ox < w and 0 <= oz < h:
+        cv2.drawMarker(panel, (ox, oz), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
+
+    cv2.putText(
+        panel,
+        f"SLAM map (top-down, {len(points)} pts)",
+        (6, 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return panel
+
+
 class _MjpegHandler(BaseHTTPRequestHandler):
     latest_jpeg: bytes | None = None
     lock = threading.Lock()
@@ -129,6 +188,7 @@ class DashboardNode(Node):
         self._depth: np.ndarray | None = None
         self._slam_debug: np.ndarray | None = None
         self._slam_debug_stamp = 0.0
+        self._map_points: list[tuple[float, float]] = []
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
         self._ultrasonic_stamp = 0.0
@@ -146,6 +206,9 @@ class DashboardNode(Node):
         )
         self.create_subscription(
             Image, "/orb_slam3/debug_image", self._on_slam_debug, qos_profile_sensor_data
+        )
+        self.create_subscription(
+            PointCloud, "/orb_slam3/map_points", self._on_map_points, qos_profile_sensor_data
         )
         self.create_subscription(String, "/rover/current_mode", self._on_mode, 10)
         self.create_subscription(
@@ -171,6 +234,12 @@ class DashboardNode(Node):
     def _on_slam_debug(self, msg: Image) -> None:
         self._slam_debug = self._bridge.imgmsg_to_cv2(msg, "bgr8")
         self._slam_debug_stamp = time.monotonic()
+
+    def _on_map_points(self, msg: PointCloud) -> None:
+        remaining = MAX_MAP_POINTS - len(self._map_points)
+        if remaining <= 0:
+            return
+        self._map_points.extend((p.x, p.z) for p in msg.points[:remaining])
 
     def _on_mode(self, msg: String) -> None:
         self._mode = msg.data
@@ -267,7 +336,10 @@ class DashboardNode(Node):
                 1,
                 cv2.LINE_AA,
             )
-        combined = np.hstack([rgb_panel, depth_panel, slam_panel])
+        map_panel = _render_map_panel(self._map_points, h, w)
+        top_row = np.hstack([rgb_panel, depth_panel])
+        bottom_row = np.hstack([slam_panel, map_panel])
+        combined = np.vstack([top_row, bottom_row])
 
         if self._ultrasonic_range is not None and now - self._ultrasonic_stamp < STALE_AFTER_S:
             us_text = f"ultrasonic: {self._ultrasonic_range:.2f}m"
