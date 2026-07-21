@@ -10,8 +10,8 @@ http://raspberrypi.local:8082 in a browser. Shows:
   - Ultrasonic reading and the correction scale depth_bridge_node applied
   - The robot's estimated position, looked up from the map->base_link TF
     (map->odom is a static identity — there's no absolute correction source
-    — and odom->base_link comes from vo_node.py's accumulated frame-to-frame
-    visual odometry, published on /rover/odom)
+    — and odom->base_link comes from slam_pose_bridge.py's ORB-SLAM3-derived
+    pose, published on /rover/odom)
 
 Unlike scripts/depth_viewer.py (a standalone diagnostic that calls the
 depth server directly), this node only subscribes to already-published

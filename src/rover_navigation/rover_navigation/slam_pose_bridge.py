@@ -1,43 +1,4 @@
-"""
-Bridge ORB-SLAM3's pose stream into /rover/odom + odom->base_link TF, gated
-by an independent frame-to-frame cross-check.
-
-ORB-SLAM3 (orb_slam3_node) is the rover's primary pose source again — RGBD
-mode, fed the same ultrasonic-scale-corrected depth map depth_bridge_node.py
-has always published. But ORB-SLAM3 runs Bundle Adjustment (BA) after the
-rover stops, which can retroactively rewrite the pose of recent keyframes:
-a real, confirmed failure mode from this project's earlier ORB-SLAM3 era
-(see SLAM_PLAN.md's "Known Issues" section) where the reported position
-would jump and then snap back, corrupting anything downstream that trusted
-it as ground truth the moment it arrived.
-
-vo_node.py runs alongside orb_slam3_node, subscribing to the same camera and
-depth topics, and independently measures each cycle's own (dx, dy, dtheta)
-step via ORB matching + PnP against the depth map — a plain, non-retroactive
-frame-to-frame comparison. This node compares ORB-SLAM3's implied step for
-each new pose against vo_node's independent measurement for the same
-capture timestamp (/rover/vo_check): if they roughly agree, the SLAM3 update
-is trusted and published; if they don't, the update is a likely BA artifact
-and is rejected — logged, and skipped, with the last known good pose held
-(same "no publish on failure" pattern the rest of this pipeline already
-uses). If vo_node has no measurement for this cycle (its own match/PnP
-failed), there's no independent evidence either way, so the SLAM3 update is
-trusted anyway — rejecting on an absence of evidence would just recreate the
-zero-evidence deadlock vo_node.py's own median-pixel-flow check exists to
-avoid.
-
-Also accounts for:
-- ORB-SLAM3 camera frame convention (z=forward, x=right, y=down)
-- Physical camera servo tilt angle (camera_tilt_deg parameter)
-
-TF is broadcast at 20 Hz so Nav2 never loses base_link. Identity is held
-until SLAM initialises; last known pose is held after tracking loss or a
-rejected update.
-"""
-
 import math
-from collections import deque
-from typing import Optional
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -46,11 +7,6 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Int32
 from tf2_ros import TransformBroadcaster
-
-from rover_navigation.vo_math import deltas_agree, world_delta_to_local
-
-VO_CHECK_BUFFER_SIZE = 20
-DEFAULT_VO_CHECK_MATCH_TOLERANCE_S = 0.3
 
 
 def _qmul(q1: tuple, q2: tuple) -> tuple:
@@ -114,25 +70,23 @@ def _build_fix(tilt_deg: float) -> tuple:
 
 
 class SlamPoseBridge(Node):
+    """Convert ORB-SLAM3 PoseStamped → Odometry + odom→base_link TF.
+
+    Accounts for:
+    - ORB-SLAM3 camera frame convention (z=forward, x=right, y=down)
+    - Physical camera servo tilt angle (camera_tilt_deg parameter)
+
+    TF is broadcast at 20 Hz so Nav2 never loses base_link. Identity is held
+    until SLAM initialises; last known pose is held after tracking loss.
+    """
+
     def __init__(self) -> None:
         super().__init__("slam_pose_bridge")
 
         self.declare_parameter("camera_tilt_deg", -13.0)
         self.declare_parameter("position_scale", 1.0)
-        self.declare_parameter("vo_check_match_tolerance_s", DEFAULT_VO_CHECK_MATCH_TOLERANCE_S)
-        self.declare_parameter("cross_check_tolerance_m", 0.15)
-        self.declare_parameter("cross_check_tolerance_relative", 0.4)
-        self.declare_parameter("cross_check_tolerance_yaw_deg", 15.0)
         tilt = float(self.get_parameter("camera_tilt_deg").value)
         self._scale = float(self.get_parameter("position_scale").value)
-        self._vo_check_tolerance = float(self.get_parameter("vo_check_match_tolerance_s").value)
-        self._cross_check_tolerance_m = float(self.get_parameter("cross_check_tolerance_m").value)
-        self._cross_check_tolerance_relative = float(
-            self.get_parameter("cross_check_tolerance_relative").value
-        )
-        self._cross_check_tolerance_yaw_rad = math.radians(
-            float(self.get_parameter("cross_check_tolerance_yaw_deg").value)
-        )
 
         self._q_fix = _build_fix(tilt)
         self._q_fix_inv = _qinv(self._q_fix)
@@ -141,25 +95,13 @@ class SlamPoseBridge(Node):
         )
 
         self._sub = self.create_subscription(PoseStamped, "/orb_slam3/pose", self._on_pose, 10)
-        self._vo_check_sub = self.create_subscription(
-            Odometry, "/rover/vo_check", self._on_vo_check, 10
-        )
         self._pub = self.create_publisher(Odometry, "/rover/odom", 10)
         self._tf_broadcaster = TransformBroadcaster(self)
-
-        self._vo_check_buffer: deque = deque(maxlen=VO_CHECK_BUFFER_SIZE)
 
         self._origin: tuple[float, float, float] | None = None
         self._origin_yaw: float = 0.0  # radians; zeroed so initial heading = x+
         self._cur_pose: tuple[float, float, float] | None = None  # (x, y, yaw_deg)
         self._first_ok_ns: float | None = None
-        # SLAM3's own raw (pre-origin-anchoring) (x, y, yaw) from the last
-        # accepted-or-unchecked cycle — used to compute this cycle's implied
-        # step for the cross-check. None means "nothing to compare against
-        # yet" (just started, or just re-anchored after a map reset) —
-        # bootstraps by accepting unconditionally, same as vo_node.py's own
-        # first-ever trigger.
-        self._prev_raw_pose: Optional[tuple[float, float, float]] = None
         # Set when ORB-SLAM3's Atlas abandons the old map and starts a new one
         # (state NO_IMAGES mid-mission). The new map's coordinate frame has no
         # relation to the old one, so the next anchor must line up with the
@@ -183,26 +125,6 @@ class SlamPoseBridge(Node):
         t.transform.rotation.w = 1.0
         return t
 
-    def _on_vo_check(self, msg: Odometry) -> None:
-        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        dx = msg.pose.pose.position.x
-        dy = msg.pose.pose.position.y
-        qz, qw = msg.pose.pose.orientation.z, msg.pose.pose.orientation.w
-        dtheta = 2.0 * math.atan2(qz, qw)
-        self._vo_check_buffer.append((stamp, dx, dy, dtheta))
-
-    def _find_matching_vo_delta(self, target_stamp: float) -> Optional[tuple[float, float, float]]:
-        """Look up the vo_node.py measurement for the same capture cycle as
-        this SLAM3 pose, by timestamp — both nodes key off the same source
-        camera/depth frame, so a genuine match should be near-exact, not
-        just close."""
-        if not self._vo_check_buffer:
-            return None
-        best = min(self._vo_check_buffer, key=lambda item: abs(item[0] - target_stamp))
-        if abs(best[0] - target_stamp) > self._vo_check_tolerance:
-            return None
-        return best[1], best[2], best[3]
-
     def _on_state(self, msg: Int32) -> None:
         if msg.data == 2 and self._first_ok_ns is None:
             self._first_ok_ns = self.get_clock().now().nanoseconds
@@ -212,12 +134,9 @@ class SlamPoseBridge(Node):
         elif msg.data == 0 and self._origin is not None:
             # NO_IMAGES mid-mission: the Atlas gave up on the old map and
             # started a brand new one. Its coordinates have no relation to
-            # the old map's, so keeping the old origin (or comparing raw
-            # poses across the reset) would produce garbage. Flag a
-            # re-anchor and reset the cross-check baseline to bootstrap
-            # fresh once tracking recovers.
+            # the old map's, so keeping the old origin would produce
+            # garbage. Flag a re-anchor to the last known pose instead.
             self._reanchor_pending = True
-            self._prev_raw_pose = None
             self.get_logger().warn(
                 "SLAM started a new map (old one lost for too long) — "
                 "will re-anchor to last known pose once tracking recovers"
@@ -249,7 +168,6 @@ class SlamPoseBridge(Node):
         ry *= self._scale
         rz *= self._scale
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
-        yaw_rad = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
         # Anchor position AND yaw 5s after SLAM first becomes OK, so the camera
         # has returned home and SLAM has settled. On the very first anchor,
@@ -264,6 +182,7 @@ class SlamPoseBridge(Node):
                 return
             if (now_ns - self._first_ok_ns) * 1e-9 < self._anchor_delay:
                 return
+            yaw_rad = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
             if self._reanchor_pending and self._cur_pose is not None:
                 target_x, target_y, target_yaw_deg = self._cur_pose
@@ -285,31 +204,6 @@ class SlamPoseBridge(Node):
                 f"yaw {math.degrees(yaw_rad):+.1f}°  → published as "
                 f"({target_x:.3f}, {target_y:.3f})  yaw {math.degrees(target_yaw_rad):+.1f}°"
             )
-
-        # Cross-check this cycle's implied step against vo_node's independent
-        # measurement for the same capture time before trusting this pose —
-        # see module docstring. self._prev_raw_pose is None right after a
-        # (re)anchor, which bootstraps by accepting unconditionally.
-        target_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self._prev_raw_pose is not None:
-            raw_delta = world_delta_to_local(*self._prev_raw_pose, rx, ry, yaw_rad)
-            vo_delta = self._find_matching_vo_delta(target_stamp)
-            if vo_delta is not None and not deltas_agree(
-                raw_delta,
-                vo_delta,
-                self._cross_check_tolerance_m,
-                self._cross_check_tolerance_relative,
-                self._cross_check_tolerance_yaw_rad,
-            ):
-                self.get_logger().warn(
-                    f"SLAM pose rejected: implied step {raw_delta} disagrees with "
-                    f"independent VO measurement {vo_delta} — likely a Bundle "
-                    "Adjustment artifact, holding last known pose"
-                )
-                self._prev_raw_pose = (rx, ry, yaw_rad)
-                return
-
-        self._prev_raw_pose = (rx, ry, yaw_rad)
 
         # Subtract origin position, then rotate so initial heading = x+
         dx = rx - self._origin[0]

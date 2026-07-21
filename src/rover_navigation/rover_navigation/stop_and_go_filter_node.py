@@ -1,21 +1,19 @@
 """
 Stop-and-go driving filter — runs on the Raspberry Pi.
 
-The AI depth model that vo_node.py/orb_slam3_node rely on for scale
-correction needs a round-trip HTTP call to a remote server, so it can't run
-continuously at camera framerate. This node makes Nav2 drive in short
-bursts instead of continuously: it passes /rover/cmd_vel_nav_raw through to
-/rover/cmd_vel_nav (consumed by mode_controller_node, unchanged) for
-drive_burst_s seconds, then zeroes the command and waits.
+The AI depth model that orb_slam3_node relies on for scale correction needs
+a round-trip HTTP call to a remote server, so it can't run continuously at
+camera framerate. This node makes Nav2 drive in short bursts instead of
+continuously: it passes /rover/cmd_vel_nav_raw through to /rover/cmd_vel_nav
+(consumed by mode_controller_node, unchanged) for drive_burst_s seconds,
+then zeroes the command and waits.
 
 Resuming from a normal pause is event-driven only — it waits for a
-/rover/odom message stamped after the pause began (i.e. a fresh,
-cross-check-accepted pose has actually landed — see slam_pose_bridge.py's
-accept/reject gate against ORB-SLAM3's Bundle Adjustment artifacts) before
-letting the rover move again. There is deliberately no timeout fallback: if
-no fix ever arrives, the rover stays put rather than driving blind. This is
-a standing project rule: never resume movement without confirmation,
-whatever the wait.
+/rover/odom message stamped after the pause began (i.e. a fresh pose has
+actually landed from slam_pose_bridge.py) before letting the rover move
+again. There is deliberately no timeout fallback: if no fix ever arrives,
+the rover stays put rather than driving blind. This is a standing project
+rule: never resume movement without confirmation, whatever the wait.
 
 Also handles ORB-SLAM3 tracking loss: when SLAM loses tracking for more
 than slam_loss_grace seconds, backs the rover up by backup_duration

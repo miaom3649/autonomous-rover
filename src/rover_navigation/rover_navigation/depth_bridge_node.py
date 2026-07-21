@@ -11,8 +11,8 @@ ill-posed problem — see README for measured error). When a fresh ultrasonic
 reading is available, it's used as a trusted anchor: we compare it against
 the AI's estimate for the forward-facing center of the frame and rescale the
 whole depth map by that ratio before publishing. This corrected depth map is
-also what vo_node.py uses to give each tracked feature point a real-world
-position for its PnP-based frame-to-frame pose estimate.
+also what orb_slam3_node consumes for its RGBD tracking, so map points carry
+real metric depth from the start.
 """
 
 import threading

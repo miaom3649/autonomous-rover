@@ -73,7 +73,7 @@ def generate_launch_description() -> LaunchDescription:
                         "frame_width": 320,
                         "frame_height": 240,
                         # Only ever one frame is used per stop cycle (see
-                        # depth_bridge_node.py / vo_node.py / orb_slam3_node) — a
+                        # depth_bridge_node.py / orb_slam3_node) — a
                         # low rate cuts wasted capture/publish CPU and shrinks the
                         # window where a new frame could land mid-depth-round-trip
                         # and get mismatched against the wrong depth map.
@@ -111,19 +111,10 @@ def generate_launch_description() -> LaunchDescription:
                 sigterm_timeout="3",
                 sigkill_timeout="3",
             ),
-            # ── Independent frame-to-frame VO cross-check (see slam_pose_bridge.py) ──
-            Node(
-                package="rover_navigation",
-                executable="vo_node",
-                name="vo_node",
-                output="screen",
-            ),
-            # ── SLAM pose bridge: publishes /rover/odom + odom->base_link TF only ───
-            # when ORB-SLAM3's pose and vo_node's independent measurement agree —
-            # see slam_pose_bridge.py's module docstring. position_scale starts at
-            # 1.0 (not the old, never-fully-diagnosed 9.6) pending fresh
-            # hand-push recalibration now that depth is ultrasonic-corrected
-            # from the start.
+            # ── SLAM pose bridge: publishes /rover/odom + odom->base_link TF from
+            # ORB-SLAM3's pose directly. position_scale starts at 1.0 (not the
+            # old, never-fully-diagnosed 9.6) pending fresh hand-push
+            # recalibration now that depth is ultrasonic-corrected from the start.
             Node(
                 package="rover_navigation",
                 executable="slam_pose_bridge",
