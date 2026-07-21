@@ -103,6 +103,11 @@ class SlamPoseBridge(Node):
         self._origin_yaw: float = 0.0  # radians; zeroed so initial heading = x+
         self._cur_pose: tuple[float, float, float] | None = None  # (x, y, yaw_deg)
         self._first_ok_ns: float | None = None
+        # Set when ORB-SLAM3's Atlas abandons the old map and starts a new one
+        # (state NO_IMAGES mid-mission). The new map's coordinate frame has no
+        # relation to the old one, so the next anchor must line up with the
+        # last known pose instead of zeroing — see _on_pose.
+        self._reanchor_pending: bool = False
         # 5s: camera physically returns home (<1s) + SLAM absorbs movement (~4s at stop-and-go fps)
         self._anchor_delay = 5.0
 
@@ -129,10 +134,19 @@ class SlamPoseBridge(Node):
             self.get_logger().info(
                 f"SLAM tracking OK — anchoring origin in {self._anchor_delay:.0f}s"
             )
+        elif msg.data == 0 and self._origin is not None:
+            # NO_IMAGES mid-mission: the Atlas gave up on the old map and
+            # started a brand new one. Its coordinates have no relation to
+            # the old map's, so keeping the old origin would produce
+            # garbage. Flag a re-anchor to the last known pose instead.
+            self._reanchor_pending = True
+            self.get_logger().warn(
+                "SLAM started a new map (old one lost for too long) — "
+                "will re-anchor to last known pose once tracking recovers"
+            )
+            self._first_ok_ns = None
         elif msg.data != 2:
             # tracking lost — reset so we re-anchor after next recovery
-            if self._origin is not None:
-                pass  # keep existing origin; don't reset after first anchor
             self._first_ok_ns = None
 
     def _on_pose(self, msg: PoseStamped) -> None:
@@ -155,19 +169,38 @@ class SlamPoseBridge(Node):
         qx, qy, qz, qw = _qmul(self._q_fix, _qmul(q_wc, self._q_fix_inv))
 
         # Anchor position AND yaw 5s after SLAM first becomes OK, so the camera
-        # has returned home and SLAM has settled. After anchoring, odom starts at
-        # (0, 0, yaw=0°) regardless of atlas coordinate frame or sweep offset.
+        # has returned home and SLAM has settled. On the very first anchor,
+        # odom starts at (0, 0, yaw=0°). On a re-anchor after a new-map reset
+        # (_reanchor_pending), line this raw pose up with the last known
+        # published pose instead of zeroing — zeroing would make the robot
+        # think it teleported back to its start position even though it may
+        # have actually travelled, silently corrupting navigation.
         now_ns = self.get_clock().now().nanoseconds
-        if self._origin is None:
+        if self._origin is None or self._reanchor_pending:
             if self._first_ok_ns is None:
                 return
             if (now_ns - self._first_ok_ns) * 1e-9 < self._anchor_delay:
                 return
             yaw_rad = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
-            self._origin = (rx, ry, rz)
-            self._origin_yaw = yaw_rad
+
+            if self._reanchor_pending and self._cur_pose is not None:
+                target_x, target_y, target_yaw_deg = self._cur_pose
+                target_yaw_rad = math.radians(target_yaw_deg)
+            else:
+                target_x, target_y, target_yaw_rad = 0.0, 0.0, 0.0
+
+            self._origin_yaw = yaw_rad - target_yaw_rad
+            cos_o = math.cos(self._origin_yaw)
+            sin_o = math.sin(self._origin_yaw)
+            self._origin = (
+                rx - (target_x * cos_o - target_y * sin_o),
+                ry - (target_x * sin_o + target_y * cos_o),
+                rz,
+            )
+            self._reanchor_pending = False
             self.get_logger().info(
-                f"SLAM origin anchored: pos ({rx:.3f}, {ry:.3f})  yaw {math.degrees(yaw_rad):+.1f}° → zeroed"
+                f"SLAM origin anchored: raw pos ({rx:.3f}, {ry:.3f})  yaw {math.degrees(yaw_rad):+.1f}°"
+                f"  → published as ({target_x:.3f}, {target_y:.3f})  yaw {math.degrees(target_yaw_rad):+.1f}°"
             )
 
         # Subtract origin position, then rotate so initial heading = x+

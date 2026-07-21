@@ -65,6 +65,7 @@ def generate_launch_description() -> LaunchDescription:
                 "depth_server_url": LaunchConfiguration("depth_server_url"),
                 "settle_delay": 0.5,
                 "request_timeout": 0.8,
+                "lidar_correction": True,
             }],
             output="screen",
         ),
@@ -118,7 +119,6 @@ def generate_launch_description() -> LaunchDescription:
             name="stop_and_go_filter_node",
             parameters=[{
                 "move_duration": 0.5,
-                "pause_duration": 0.9,
                 "slam_loss_grace": 2.0,
                 "backup_speed": 0.10,
                 "backup_duration": 1.0,

@@ -1,10 +1,12 @@
 import enum
+import time
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Int32
 
 _RELIABLE = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -24,6 +26,14 @@ class _State(enum.Enum):
 class StopAndGoFilterNode(Node):
     """Converts continuous Nav2 cmd_vel into stop-and-go bursts.
 
+    During each pause, waits for a fresh /rover/odom (proof that
+    depth_bridge_node's round trip to the depth server finished and
+    ORB-SLAM3 actually processed the resulting frame) before resuming
+    movement, instead of blindly waiting a fixed pause_duration and hoping
+    the depth round trip finished in time. pause_duration is kept as a
+    safety-net timeout — if no fresh odom shows up in time (depth server
+    slow/unreachable), movement resumes anyway rather than stalling forever.
+
     Also handles SLAM tracking loss: when SLAM loses tracking for more than
     slam_loss_grace seconds, the node backs the rover up by backup_duration
     seconds (to bring previously-mapped features back into view), then stops
@@ -34,14 +44,12 @@ class StopAndGoFilterNode(Node):
         super().__init__("stop_and_go_filter_node")
 
         self.declare_parameter("move_duration", 0.3)
-        self.declare_parameter("pause_duration", 0.7)
         self.declare_parameter("slam_loss_grace", 2.0)
         self.declare_parameter("backup_speed", 0.10)
         self.declare_parameter("backup_duration", 1.0)
         self.declare_parameter("slam_stabilize_duration", 5.0)
 
         self._move_dur: float = self.get_parameter("move_duration").value
-        self._pause_dur: float = self.get_parameter("pause_duration").value
         self._slam_loss_grace: float = self.get_parameter("slam_loss_grace").value
         self._backup_speed: float = self.get_parameter("backup_speed").value
         self._backup_dur: float = self.get_parameter("backup_duration").value
@@ -53,10 +61,16 @@ class StopAndGoFilterNode(Node):
             Int32, "/orb_slam3/state", self._on_slam_state,
             QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE),
         )
+        self.create_subscription(Odometry, "/rover/odom", self._on_odom, 10)
 
         self._latest = Twist()
         self._state = _State.IDLE
         self._phase_start = self.get_clock().now()
+
+        # Monotonic (not ROS-time) bookkeeping for "did a fresh odom arrive
+        # since this pause began" — simpler and immune to ROS clock jumps.
+        self._pause_entered_at: float = 0.0
+        self._last_odom_at: float = -1.0
 
         self._slam_state: int = -1
         self._slam_was_ok: bool = False
@@ -65,7 +79,7 @@ class StopAndGoFilterNode(Node):
         self.create_timer(0.05, self._tick)
         self.get_logger().info(
             f"Stop-and-go filter ready — "
-            f"move={self._move_dur}s pause={self._pause_dur}s  "
+            f"move={self._move_dur}s pause=wait-for-odom (no timeout)  "
             f"slam_grace={self._slam_loss_grace}s "
             f"backup={self._backup_dur}s@{self._backup_speed}m/s "
             f"stabilize={self._slam_stabilize_dur}s"
@@ -73,6 +87,12 @@ class StopAndGoFilterNode(Node):
 
     def _on_cmd(self, msg: Twist) -> None:
         self._latest = msg
+
+    def _on_odom(self, msg: Odometry) -> None:
+        self._last_odom_at = time.monotonic()
+
+    def _odom_fresh_since_pause(self) -> bool:
+        return self._last_odom_at >= self._pause_entered_at
 
     def _on_slam_state(self, msg: Int32) -> None:
         prev = self._slam_state
@@ -176,19 +196,25 @@ class StopAndGoFilterNode(Node):
             elif self._elapsed() >= self._move_dur:
                 self._state = _State.PAUSING
                 self._phase_start = self.get_clock().now()
+                self._pause_entered_at = time.monotonic()
                 self.get_logger().debug("→ pause")
                 self._pub.publish(Twist())
             else:
                 self._pub.publish(self._latest)
 
         elif self._state == _State.PAUSING:
+            # Waits indefinitely for a fresh /rover/odom — no timeout fallback.
+            # Moving again without confirmation that depth_bridge_node's round
+            # trip actually finished would mean driving blind; better to sit
+            # still (Nav2's own progress_checker will fail the goal if this
+            # drags on) than guess and risk compounding a bad position.
             if not self._has_cmd():
                 self._state = _State.IDLE
                 self._pub.publish(Twist())
-            elif self._elapsed() >= self._pause_dur:
+            elif self._odom_fresh_since_pause():
                 self._state = _State.MOVING
                 self._phase_start = self.get_clock().now()
-                self.get_logger().debug("→ move")
+                self.get_logger().debug("→ move (odom confirmed)")
                 self._pub.publish(self._latest)
             else:
                 self._pub.publish(Twist())
