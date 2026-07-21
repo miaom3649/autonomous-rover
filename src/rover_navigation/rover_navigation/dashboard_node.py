@@ -1,20 +1,23 @@
 """
 Live rover dashboard — runs on the Pi as part of nav.launch.py.
 
-Subscribes to the camera, corrected depth, mode, ultrasonic, and odometry
-topics and serves a combined view as MJPEG over HTTP for debugging — open
+Subscribes to the camera, corrected depth, mode, and ultrasonic topics and
+serves a combined view as MJPEG over HTTP for debugging — open
 http://raspberrypi.local:8082 in a browser. Shows:
   - RGB camera feed (left) and the corrected depth map (right), the depth
     panel annotated with the same per-region grid as scripts/depth_viewer.py
   - Current MANUAL/AUTO mode
   - Ultrasonic reading and the correction scale depth_bridge_node applied
-  - The robot's estimated position from /rover/odom
+  - The robot's estimated position, looked up from the map->base_link TF
+    (published by slam_toolbox — there's no /rover/odom topic since this
+    rover has no wheel odometry and localization is lidar-only)
 
 Unlike scripts/depth_viewer.py (a standalone diagnostic that calls the
 depth server directly), this node only subscribes to already-published
 topics — it shows exactly what the rest of the stack is actually using,
 not a separate re-computation.
 """
+import math
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,11 +26,17 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Range
 from std_msgs.msg import Float32, String
+from tf2_ros import (
+    Buffer,
+    ConnectivityException,
+    ExtrapolationException,
+    LookupException,
+    TransformListener,
+)
 
 PORT = 8082
 GRID_ROWS = 3
@@ -107,8 +116,9 @@ class DashboardNode(Node):
         self._ultrasonic_stamp = 0.0
         self._scale: float | None = None
         self._scale_stamp = 0.0
-        self._pose_xy: tuple[float, float] | None = None
-        self._pose_stamp = 0.0
+
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self.create_subscription(
             Image, "/rover/camera/image_raw", self._on_rgb, qos_profile_sensor_data
@@ -124,9 +134,9 @@ class DashboardNode(Node):
             Float32, "/rover/camera/depth_correction_scale", self._on_scale,
             qos_profile_sensor_data,
         )
-        self.create_subscription(Odometry, "/rover/odom", self._on_odom, 10)
 
         self.create_timer(0.1, self._render)
+        self.create_timer(2.0, self._log_pose)
         self.get_logger().info(f"Dashboard ready — open http://raspberrypi.local:{PORT}")
 
     def _on_rgb(self, msg: Image) -> None:
@@ -146,9 +156,23 @@ class DashboardNode(Node):
         self._scale = float(msg.data)
         self._scale_stamp = time.monotonic()
 
-    def _on_odom(self, msg: Odometry) -> None:
-        self._pose_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-        self._pose_stamp = time.monotonic()
+    def _lookup_pose(self) -> tuple[float, float, float] | None:
+        """Return (x, y, yaw_deg) from the map->base_link TF, or None if unavailable."""
+        try:
+            t = self._tf_buffer.lookup_transform("map", "base_link", rclpy.time.Time())
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            return None
+        q = t.transform.rotation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        return (t.transform.translation.x, t.transform.translation.y, math.degrees(yaw))
+
+    def _log_pose(self) -> None:
+        pose = self._lookup_pose()
+        if pose is None:
+            self.get_logger().info("pose  no map->base_link transform yet")
+            return
+        x, y, yaw_deg = pose
+        self.get_logger().info(f"pose  x={x:+.3f}  y={y:+.3f}  yaw={yaw_deg:+.1f}°")
 
     def _render(self) -> None:
         if self._rgb is None:
@@ -168,7 +192,7 @@ class DashboardNode(Node):
 
         cv2.putText(rgb_panel, "RGB", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(depth_panel, "Depth (as published, ultrasonic-corrected)", (6, 16),
+        cv2.putText(depth_panel, "Depth (as published, lidar-corrected)", (6, 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
         combined = np.hstack([rgb_panel, depth_panel])
 
@@ -180,10 +204,11 @@ class DashboardNode(Node):
         else:
             us_text = "ultrasonic: no reading"
 
-        if self._pose_xy is not None and now - self._pose_stamp < STALE_AFTER_S:
-            pos_text = f"position: x={self._pose_xy[0]:.2f}m  y={self._pose_xy[1]:.2f}m"
+        pose = self._lookup_pose()
+        if pose is not None:
+            pos_text = f"position: x={pose[0]:.2f}m  y={pose[1]:.2f}m  yaw={pose[2]:+.1f}°"
         else:
-            pos_text = "position: no odom yet"
+            pos_text = "position: no map->base_link transform yet"
 
         mode_text = f"mode: {self._mode}"
 

@@ -10,10 +10,14 @@ def generate_launch_description() -> LaunchDescription:
     use_sim = LaunchConfiguration("use_sim")
 
     home = os.path.expanduser("~")
-    vocab_path = os.path.join(home, "ORB_SLAM3", "Vocabulary", "ORBvoc.txt")
-    settings_path = os.path.join(home, "dev", "autonomous-rover", "config", "orbslam3.yaml")
     base_params = os.path.join(home, "dev", "autonomous-rover", "config", "base_params.yaml")
     nav2_params = os.path.join(home, "dev", "autonomous-rover", "config", "nav2_params.yaml")
+    lidar_params = os.path.join(
+        home, "dev", "autonomous-rover", "src", "ydlidar_ros2_driver", "params", "X3.yaml"
+    )
+    slam_toolbox_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "slam_toolbox_params.yaml"
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("use_sim", default_value="false",
@@ -21,27 +25,27 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth_server_url", default_value="http://192.168.1.151:8765/depth",
                               description="URL of the Windows depth inference server"),
         DeclareLaunchArgument(
-            "dashboard_start_delay", default_value="5.0",
-            description=(
-                "Seconds to wait before starting dashboard_node (live camera/depth/"
-                "mode/ultrasonic/position web view on :8082). It's lightweight, but "
-                "starting it at t=0 alongside ORB-SLAM3's vocabulary load would still "
-                "add to the same startup memory spike this file already staggers "
-                "around, so it gets a small delay of its own rather than none."
-            ),
+            "dashboard_start_delay", default_value="3.0",
+            description="Seconds to wait before starting dashboard_node.",
         ),
         DeclareLaunchArgument(
-            "nav2_start_delay", default_value="45.0",
+            "nav2_start_delay", default_value="15.0",
             description=(
-                "Seconds to wait before starting the Nav2 stack. On a 2GB Pi 4, "
-                "ORB-SLAM3 loading its ~145MB text vocabulary at the same time Nav2's "
-                "costmaps and camera/SLAM are all initializing can exceed available "
-                "RAM, causing the whole system to swap-thrash into total unresponsiveness "
-                "(SD-card-speed swap under sustained pressure never triggers the OOM "
-                "killer, so it doesn't recover on its own). Staggering the startup keeps "
-                "peak memory demand from stacking."
+                "Seconds to wait before starting the Nav2 stack, so the lidar driver "
+                "and slam_toolbox are already publishing map->odom before Nav2's "
+                "costmaps start looking for it. Much shorter than the old ORB-SLAM3 "
+                "era's delay (45s) — slam_toolbox has no ~145MB vocabulary file to "
+                "load and is far lighter on startup memory."
             ),
         ),
+        # Lidar mounting offset relative to base_link — PLACEHOLDER VALUES.
+        # Measure the real offset once the lidar is permanently mounted and
+        # update these defaults (or pass them as launch arguments).
+        DeclareLaunchArgument("lidar_x", default_value="0.0", description="Lidar x offset (m)"),
+        DeclareLaunchArgument("lidar_y", default_value="0.0", description="Lidar y offset (m)"),
+        DeclareLaunchArgument("lidar_z", default_value="0.05", description="Lidar height (m)"),
+        DeclareLaunchArgument("lidar_yaw", default_value="0.0",
+                              description="Lidar yaw offset (rad) from base_link forward"),
 
         # ── Hardware nodes ────────────────────────────────────────────────────
         Node(
@@ -56,7 +60,17 @@ def generate_launch_description() -> LaunchDescription:
             name="camera_node",
             parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
         ),
-        # ── Depth bridge (grabs frames at stops, fetches metric depth from Windows GPU) ──
+
+        # ── 2D lidar (YDLidar X3) — primary localization sensor ────────────────
+        Node(
+            package="ydlidar_ros2_driver",
+            executable="ydlidar_ros2_driver_node",
+            name="ydlidar_ros2_driver_node",
+            parameters=[lidar_params],
+            output="screen",
+        ),
+
+        # ── Depth bridge (camera+AI depth for obstacle awareness, lidar-corrected) ──
         Node(
             package="rover_navigation",
             executable="depth_bridge_node",
@@ -70,60 +84,37 @@ def generate_launch_description() -> LaunchDescription:
             output="screen",
         ),
 
-        # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
-        Node(
-            package="rover_slam",
-            executable="orb_slam3_node",
-            name="orb_slam3_node",
-            parameters=[{
-                "vocab_path": vocab_path,
-                "settings_path": settings_path,
-            }],
-            output="screen",
-            sigterm_timeout="3",
-            sigkill_timeout="3",
-        ),
-        Node(
-            package="rover_navigation",
-            executable="slam_pose_bridge",
-            name="slam_pose_bridge",
-            parameters=[{"camera_tilt_deg": 2.0, "position_scale": 9.6}],
-        ),
-
-        # ── SLAM initialisation helper (pan sweep until tracking starts) ─────
-        Node(
-            package="rover_navigation",
-            executable="slam_init_helper_node",
-            name="slam_init_helper_node",
-        ),
-
-        # ── Ultrasonic → LaserScan ────────────────────────────────────────────
-        Node(
-            package="rover_navigation",
-            executable="ultrasonic_to_scan_node",
-            name="ultrasonic_to_scan_node",
-        ),
-
-        # ── map→odom: static identity — ORB-SLAM3 is the only position source ──
+        # ── TF: base_link -> laser_frame (lidar mounting offset) ───────────────
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
-            name="map_to_odom_static",
-            arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
+            name="base_link_to_laser_static",
+            arguments=[
+                LaunchConfiguration("lidar_x"), LaunchConfiguration("lidar_y"),
+                LaunchConfiguration("lidar_z"),
+                LaunchConfiguration("lidar_yaw"), "0", "0",
+                "base_link", "laser_frame",
+            ],
         ),
 
-        # ── Stop-and-go filter (gates Nav2 cmd_vel into move/pause bursts) ──
+        # ── TF: odom -> base_link, static identity ──────────────────────────────
+        # No wheel encoders on this rover, so there's no real local motion
+        # source to publish here. slam_toolbox publishes map->odom on top of
+        # this and relies entirely on scan matching (no external motion prior).
         Node(
-            package="rover_navigation",
-            executable="stop_and_go_filter_node",
-            name="stop_and_go_filter_node",
-            parameters=[{
-                "move_duration": 0.5,
-                "slam_loss_grace": 2.0,
-                "backup_speed": 0.10,
-                "backup_duration": 1.0,
-                "slam_stabilize_duration": 5.0,
-            }],
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="odom_to_base_link_static",
+            arguments=["0", "0", "0", "0", "0", "0", "odom", "base_link"],
+        ),
+
+        # ── slam_toolbox (lidar SLAM — map->odom + occupancy grid map) ──────────
+        Node(
+            package="slam_toolbox",
+            executable="async_slam_toolbox_node",
+            name="slam_toolbox",
+            parameters=[slam_toolbox_params],
+            output="screen",
         ),
 
         # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
@@ -131,7 +122,6 @@ def generate_launch_description() -> LaunchDescription:
             package="rover_control",
             executable="mode_controller_node",
             name="mode_controller_node",
-            remappings=[("/rover/cmd_vel_nav", "/rover/cmd_vel_nav_gated")],
         ),
 
         # ── Live debug dashboard (camera/depth/mode/ultrasonic/position on :8082) ──
@@ -147,8 +137,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
 
         # ── Nav2 stack ────────────────────────────────────────────────────────
-        # Delayed: see nav2_start_delay above — avoids stacking Nav2's costmap
-        # init memory spike on top of ORB-SLAM3's vocabulary load.
+        # Delayed: see nav2_start_delay above.
         TimerAction(
             period=LaunchConfiguration("nav2_start_delay"),
             actions=[

@@ -9,7 +9,8 @@
 
   <exec_depend>rover_base</exec_depend>
   <exec_depend>rover_navigation</exec_depend>
-  <exec_depend>rover_slam</exec_depend>
+  <exec_depend>ydlidar_ros2_driver</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_controller</exec_depend>
   <exec_depend>nav2_planner</exec_depend>
