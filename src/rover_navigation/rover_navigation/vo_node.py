@@ -10,23 +10,22 @@ pixel positions now directly recovers the camera's metric relative motion
 in one step (no separate essential-matrix-plus-scale-guess pass needed,
 since every point already carries its own depth).
 
-The result is accumulated into a running pose, published on /rover/odom.
-stop_and_go_filter_node.py waits for a fresh /rover/odom message before
-letting the rover move again — which only works as a real safety check
-because this node publishes to that topic *only* on a genuine successful
-update (or the very first trigger, which establishes the origin). A failed
-or degenerate step publishes nothing to /rover/odom at all: if it instead
-published a "no motion" fallback, stop_and_go_filter_node would treat that
-as confirmation and keep driving blind whenever VO can't actually measure
-anything, defeating the whole point of waiting for a fix.
+This node is *not* the rover's pose source — ORB-SLAM3 (orb_slam3_node) is,
+via slam_pose_bridge.py. This node only measures each cycle's own
+independent (dx, dy, dtheta) step and publishes it on /rover/vo_check.
+slam_pose_bridge.py compares its own SLAM3-derived step for the same cycle
+against this measurement before trusting it: ORB-SLAM3's Bundle Adjustment
+can retroactively rewrite recent poses, producing a jump that this
+node's honest, non-retroactive frame-to-frame measurement won't agree with
+— see slam_pose_bridge.py's module docstring for the accept/reject logic.
+This node itself never accumulates a running pose or owns any TF; it only
+ever reports "this cycle's step, as far as I can tell."
 
-The odom->base_link TF is a separate concern, broadcast on its own steady
-timer regardless of whether a fresh measurement just landed: ROS2 doesn't
-replay dynamic (non-static) TF history to late subscribers, so anything
-that only broadcasts on real updates leaves base_link entirely missing
-from the TF tree to any listener that started up during a gap — e.g. Nav2's
-costmaps, which start well after this node and would otherwise see
-"frame does not exist" instead of a merely-stale-but-present transform.
+A failed or degenerate step (too few features/matches, coplanar points,
+PnP failure) publishes nothing to /rover/vo_check at all — a fabricated
+"no motion" fallback would be indistinguishable from a real, confirmed
+zero-flow measurement to slam_pose_bridge.py's cross-check, silently
+disabling it exactly when there's no real evidence either way.
 """
 
 from collections import deque
@@ -36,16 +35,15 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from tf2_ros import TransformBroadcaster
 
 from rover_navigation.vo_math import (
     camera_delta_to_base_link_delta,
     is_well_conditioned,
+    median_pixel_flow,
     solve_relative_pose,
     unproject,
 )
@@ -56,8 +54,8 @@ DEFAULT_MAX_STEP_TRANSLATION_M = 1.0
 DEFAULT_MAX_DEPTH_M = 6.0
 DEFAULT_MATCH_RATIO = 0.75
 DEFAULT_FRAME_MATCH_TOLERANCE_S = 0.15
+DEFAULT_MIN_PIXEL_FLOW_PX = 3.0
 RGB_BUFFER_SIZE = 20
-TF_BROADCAST_PERIOD_S = 0.1
 
 
 class VoNode(Node):
@@ -78,6 +76,7 @@ class VoNode(Node):
         self.declare_parameter("max_depth_m", DEFAULT_MAX_DEPTH_M)
         self.declare_parameter("match_ratio", DEFAULT_MATCH_RATIO)
         self.declare_parameter("frame_match_tolerance_s", DEFAULT_FRAME_MATCH_TOLERANCE_S)
+        self.declare_parameter("min_pixel_flow_px", DEFAULT_MIN_PIXEL_FLOW_PX)
 
         fx = float(self.get_parameter("fx").value)
         fy = float(self.get_parameter("fy").value)
@@ -101,6 +100,7 @@ class VoNode(Node):
         self._max_depth = float(self.get_parameter("max_depth_m").value)
         self._match_ratio = float(self.get_parameter("match_ratio").value)
         self._frame_match_tolerance = float(self.get_parameter("frame_match_tolerance_s").value)
+        self._min_pixel_flow_px = float(self.get_parameter("min_pixel_flow_px").value)
 
         self._bridge = CvBridge()
         self._orb = cv2.ORB_create(nfeatures=500)
@@ -112,12 +112,7 @@ class VoNode(Node):
         self._prev_kp = None
         self._prev_des = None
 
-        self._x = 0.0
-        self._y = 0.0
-        self._yaw = 0.0
-
-        self._tf_broadcaster = TransformBroadcaster(self)
-        self._pub_odom = self.create_publisher(Odometry, "/rover/odom", 10)
+        self._pub_vo_check = self.create_publisher(Odometry, "/rover/vo_check", 10)
 
         self.create_subscription(
             Image, "/rover/camera/image_raw", self._on_image, qos_profile_sensor_data
@@ -125,11 +120,6 @@ class VoNode(Node):
         self.create_subscription(
             Image, "/rover/camera/depth", self._on_depth, qos_profile_sensor_data
         )
-
-        # Broadcast the TF immediately and then on a steady timer (see module
-        # docstring) — independent of whether a real VO update ever lands.
-        self._broadcast_tf()
-        self.create_timer(TF_BROADCAST_PERIOD_S, self._broadcast_tf)
 
         self.get_logger().info("vo_node ready")
 
@@ -155,10 +145,11 @@ class VoNode(Node):
     def _on_depth(self, msg: Image) -> None:
         """Each new corrected depth map is a trigger: one VO step per stop cycle.
 
-        Only publishes /rover/odom on a genuine successful update (or the very
-        first trigger, which establishes the origin) — see module docstring
-        for why a failed step must publish nothing rather than a "no motion"
-        fallback.
+        Only publishes /rover/vo_check on a genuine successful measurement —
+        see module docstring for why a failed step must publish nothing
+        rather than a "no motion" fallback. The very first trigger has
+        nothing to compare against yet, so it only caches and reports
+        nothing either.
         """
         target_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         rgb = self._find_matching_rgb(target_stamp)
@@ -175,7 +166,6 @@ class VoNode(Node):
         if self._prev_gray is None:
             self._prev_gray, self._prev_depth = gray, depth
             self._prev_kp, self._prev_des = kp, des
-            self._publish_odom(msg.header.stamp, dx=0.0, dy=0.0, dtheta=0.0)
             return
 
         step = self._estimate_step(kp, des)
@@ -186,7 +176,7 @@ class VoNode(Node):
         if step is None:
             return
         dx, dy, dtheta = step
-        self._publish_odom(msg.header.stamp, dx, dy, dtheta)
+        self._publish_delta(msg.header.stamp, dx, dy, dtheta)
 
     def _estimate_step(self, kp, des) -> Optional[tuple[float, float, float]]:
         """Returns the (dx, dy, dtheta) step, or None on a degenerate/failed
@@ -200,6 +190,26 @@ class VoNode(Node):
         if len(matches) < self._min_matches:
             self.get_logger().warn("VO step skipped: too few ORB matches")
             return None
+
+        prev_pts = np.array([self._prev_kp[m.queryIdx].pt for m in matches])
+        curr_pts = np.array([kp[m.trainIdx].pt for m in matches])
+        flow = median_pixel_flow(prev_pts, curr_pts)
+        if flow < self._min_pixel_flow_px:
+            # Real evidence the camera barely moved (not an absence-of-data
+            # fallback) — see module docstring on median_pixel_flow in
+            # vo_math.py. Reporting this confirms zero motion instead of
+            # feeding a near-singular, near-zero-baseline problem to PnP,
+            # which would otherwise blow up into an arbitrarily large,
+            # arbitrarily-directed "displacement" from pure noise — and,
+            # left unreported, would leave stop_and_go_filter_node waiting
+            # forever for a fix that can never arrive once the rover is
+            # actually stopped, since every future frame pair would be just
+            # as motionless.
+            self.get_logger().info(
+                f"VO step: negligible pixel flow ({flow:.1f}px < {self._min_pixel_flow_px}px) "
+                "— confirming no motion"
+            )
+            return 0.0, 0.0, 0.0
 
         fx, fy = self._camera_matrix[0, 0], self._camera_matrix[1, 1]
         cx, cy = self._camera_matrix[0, 2], self._camera_matrix[1, 2]
@@ -275,44 +285,23 @@ class VoNode(Node):
             return None
         return d
 
-    def _publish_odom(self, stamp, dx: float, dy: float, dtheta: float) -> None:
-        """Update the running pose from a confirmed VO step (or the initial
-        origin) and publish it on /rover/odom — the confirmation signal
-        stop_and_go_filter_node waits for. Does not touch the TF; that's
-        _broadcast_tf's job, on its own steady timer."""
-        # Compose the relative (dx, dy, dtheta) — expressed in the previous
-        # base_link frame — onto the running world-frame (odom) pose.
-        cos_yaw, sin_yaw = np.cos(self._yaw), np.sin(self._yaw)
-        self._x += dx * cos_yaw - dy * sin_yaw
-        self._y += dx * sin_yaw + dy * cos_yaw
-        self._yaw += dtheta
+    def _publish_delta(self, stamp, dx: float, dy: float, dtheta: float) -> None:
+        """Publish this cycle's independently-measured (dx, dy, dtheta) step
+        on /rover/vo_check — a one-shot measurement, not an accumulated
+        pose. slam_pose_bridge.py reads this to cross-check ORB-SLAM3's own
+        step for the same cycle (matched by header.stamp, the original
+        capture time) before trusting it."""
+        qz, qw = np.sin(dtheta / 2.0), np.cos(dtheta / 2.0)
 
-        qz, qw = np.sin(self._yaw / 2.0), np.cos(self._yaw / 2.0)
-
-        odom = Odometry()
-        odom.header.stamp = stamp
-        odom.header.frame_id = "odom"
-        odom.child_frame_id = "base_link"
-        odom.pose.pose.position.x = self._x
-        odom.pose.pose.position.y = self._y
-        odom.pose.pose.orientation.z = qz
-        odom.pose.pose.orientation.w = qw
-        self._pub_odom.publish(odom)
-
-    def _broadcast_tf(self) -> None:
-        """Re-broadcast the current (possibly unchanged) pose as the
-        odom->base_link TF. Runs on a steady timer independent of VO
-        updates — see module docstring for why."""
-        qz, qw = np.sin(self._yaw / 2.0), np.cos(self._yaw / 2.0)
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp = self.get_clock().now().to_msg()
-        tf_msg.header.frame_id = "odom"
-        tf_msg.child_frame_id = "base_link"
-        tf_msg.transform.translation.x = self._x
-        tf_msg.transform.translation.y = self._y
-        tf_msg.transform.rotation.z = qz
-        tf_msg.transform.rotation.w = qw
-        self._tf_broadcaster.sendTransform(tf_msg)
+        msg = Odometry()
+        msg.header.stamp = stamp
+        msg.header.frame_id = "odom"
+        msg.child_frame_id = "base_link"
+        msg.pose.pose.position.x = dx
+        msg.pose.pose.position.y = dy
+        msg.pose.pose.orientation.z = qz
+        msg.pose.pose.orientation.w = qw
+        self._pub_vo_check.publish(msg)
 
 
 def main(args: list[str] | None = None) -> None:

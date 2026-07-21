@@ -1,9 +1,10 @@
 """
 Pure math for frame-to-frame visual odometry — no ROS dependencies, so this
 is directly unit-testable (see tests/test_vo_pnp.py at the repo root).
-Used by vo_node.py.
+Used by vo_node.py and slam_pose_bridge.py.
 """
 
+import math
 from typing import Optional
 
 import cv2
@@ -11,6 +12,10 @@ import numpy as np
 
 DEFAULT_MIN_INLIERS = 8
 DEFAULT_MIN_DEPTH_SPREAD_M = 0.15
+DEFAULT_MIN_PIXEL_FLOW_PX = 3.0
+DEFAULT_CROSS_CHECK_TOLERANCE_M = 0.15
+DEFAULT_CROSS_CHECK_TOLERANCE_RELATIVE = 0.4
+DEFAULT_CROSS_CHECK_TOLERANCE_YAW_RAD = 0.26  # ~15 degrees
 
 
 def unproject(
@@ -36,6 +41,25 @@ def is_well_conditioned(
         return False
     depth_spread = float(object_points[:, 2].max() - object_points[:, 2].min())
     return depth_spread >= min_depth_spread
+
+
+def median_pixel_flow(prev_points: np.ndarray, curr_points: np.ndarray) -> float:
+    """Median matched-keypoint displacement (in pixels) between the two frames.
+
+    PnP's translation estimate is only observable when there's real parallax
+    between the two views — with near-zero true camera motion, the problem
+    is close to singular and tiny match/pixel noise gets amplified into an
+    arbitrarily large, arbitrarily-directed translation instead of a small
+    one. Checking depth spread alone (is_well_conditioned) doesn't catch
+    this: a scene can have plenty of depth variation and still be a
+    degenerate PnP input if the camera itself barely moved between frames.
+    A low median flow is direct, positive evidence the camera didn't move
+    (rather than an absence-of-evidence fallback), so it's safe for the
+    caller to report a confirmed zero-motion step instead of running PnP.
+    """
+    if len(prev_points) == 0:
+        return 0.0
+    return float(np.median(np.linalg.norm(curr_points - prev_points, axis=1)))
 
 
 def solve_relative_pose(
@@ -93,3 +117,50 @@ def camera_delta_to_base_link_delta(
     theta_cam = float(np.arctan2(rotation[0, 2], rotation[2, 2]))
     dtheta = -theta_cam
     return dx, dy, dtheta
+
+
+def world_delta_to_local(
+    prev_x: float, prev_y: float, prev_yaw: float, cur_x: float, cur_y: float, cur_yaw: float
+) -> tuple[float, float, float]:
+    """Convert two absolute (x, y, yaw) poses in the same world frame into a
+    (dx, dy, dtheta) step expressed in the previous pose's local frame — the
+    inverse of the compose-onto-a-running-pose step vo_node.py's
+    _publish_delta does. Used by slam_pose_bridge.py to turn ORB-SLAM3's
+    consecutive absolute poses into a step comparable against vo_node's own
+    per-cycle (dx, dy, dtheta) measurement.
+    """
+    dx_world = cur_x - prev_x
+    dy_world = cur_y - prev_y
+    cos_p, sin_p = math.cos(prev_yaw), math.sin(prev_yaw)
+    dx = dx_world * cos_p + dy_world * sin_p
+    dy = -dx_world * sin_p + dy_world * cos_p
+    dtheta = math.atan2(math.sin(cur_yaw - prev_yaw), math.cos(cur_yaw - prev_yaw))
+    return dx, dy, dtheta
+
+
+def deltas_agree(
+    delta_a: tuple[float, float, float],
+    delta_b: tuple[float, float, float],
+    tolerance_m: float = DEFAULT_CROSS_CHECK_TOLERANCE_M,
+    tolerance_relative: float = DEFAULT_CROSS_CHECK_TOLERANCE_RELATIVE,
+    tolerance_yaw_rad: float = DEFAULT_CROSS_CHECK_TOLERANCE_YAW_RAD,
+) -> bool:
+    """Do two independently-measured (dx, dy, dtheta) steps for the same
+    cycle roughly agree?
+
+    Used to gate ORB-SLAM3 pose updates in slam_pose_bridge.py against
+    vo_node.py's independent frame-to-frame PnP measurement: a genuine
+    Bundle-Adjustment-artifact jump (SLAM3 retroactively/inconsistently
+    rewriting its notion of the last step) won't match what incremental
+    optical evidence actually measured, so it gets rejected instead of
+    published. The tolerance is the larger of a flat floor (tolerance_m) and
+    a fraction of the step size (tolerance_relative), since a fixed-size
+    tolerance would be too loose for tiny steps and too tight for large ones.
+    """
+    dx_a, dy_a, dtheta_a = delta_a
+    dx_b, dy_b, dtheta_b = delta_b
+    translation_diff = math.hypot(dx_a - dx_b, dy_a - dy_b)
+    reference = max(math.hypot(dx_a, dy_a), math.hypot(dx_b, dy_b))
+    allowed_translation = max(tolerance_m, tolerance_relative * reference)
+    yaw_diff = abs(math.atan2(math.sin(dtheta_a - dtheta_b), math.cos(dtheta_a - dtheta_b)))
+    return translation_diff <= allowed_translation and yaw_diff <= tolerance_yaw_rad

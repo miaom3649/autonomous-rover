@@ -1,0 +1,57 @@
+%YAML:1.0
+
+#--------------------------------------------------------------------------------------------
+# Camera - PinHole, calibrated at 640x480 and scaled x0.5 to 320x240
+# RMS reprojection error: 0.7344 px
+#--------------------------------------------------------------------------------------------
+System.SaveAtlasToFile: "/home/konkon/maps/room"
+
+Camera.type: "PinHole"
+
+Camera.fx: 321.03098008641035
+Camera.fy: 320.50224839822980
+Camera.cx: 156.38881537724336
+Camera.cy: 116.02029997042648
+
+Camera.k1:  0.34740589756056456
+Camera.k2: -2.328076843275508
+Camera.p1: -0.006620102436670903
+Camera.p2: -0.0031368694154414716
+
+Camera.width:  320
+Camera.height: 240
+Camera.fps:    15
+Camera.RGB:    1
+
+#--------------------------------------------------------------------------------------------
+# RGBD-specific parameters
+# Camera.bf = virtual_baseline_m * fx — affects close/far point classification
+# mThDepth (m) = Camera.bf * ThDepth / Camera.fx = 24 * 40 / 321 ≈ 3.0 m
+# DepthMapFactor: depth images are float32 in meters — no conversion needed (factor = 1)
+#--------------------------------------------------------------------------------------------
+Camera.bf: 24.0
+ThDepth: 40.0
+DepthMapFactor: 1.0
+
+#--------------------------------------------------------------------------------------------
+# ORB extractor — reduced feature count for Pi 4 CPU budget
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures:   1000
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels:     8
+ORBextractor.iniThFAST:   5
+ORBextractor.minThFAST:   1
+
+#--------------------------------------------------------------------------------------------
+# Viewer — required fields even when use_viewer=false
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0

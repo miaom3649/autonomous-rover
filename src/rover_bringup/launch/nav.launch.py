@@ -10,6 +10,8 @@ def generate_launch_description() -> LaunchDescription:
     use_sim = LaunchConfiguration("use_sim")
 
     home = os.path.expanduser("~")
+    vocab_path = os.path.join(home, "ORB_SLAM3", "Vocabulary", "ORBvoc.txt")
+    settings_path = os.path.join(home, "dev", "autonomous-rover", "config", "orbslam3.yaml")
     base_params = os.path.join(home, "dev", "autonomous-rover", "config", "base_params.yaml")
     nav2_params = os.path.join(home, "dev", "autonomous-rover", "config", "nav2_params.yaml")
 
@@ -27,16 +29,26 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "dashboard_start_delay",
-                default_value="3.0",
-                description="Seconds to wait before starting dashboard_node.",
+                default_value="5.0",
+                description=(
+                    "Seconds to wait before starting dashboard_node. It's lightweight, "
+                    "but starting it at t=0 alongside ORB-SLAM3's vocabulary load would "
+                    "still add to the same startup memory spike this file already "
+                    "staggers around, so it gets a small delay of its own rather than none."
+                ),
             ),
             DeclareLaunchArgument(
                 "nav2_start_delay",
-                default_value="15.0",
+                default_value="45.0",
                 description=(
-                    "Seconds to wait before starting the Nav2 stack, so the first "
-                    "stop-cycle VO fix has already landed before Nav2's costmaps "
-                    "start looking for map->odom->base_link."
+                    "Seconds to wait before starting the Nav2 stack. On a 2GB Pi 4, "
+                    "ORB-SLAM3 loading its ~145MB text vocabulary at the same time "
+                    "Nav2's costmaps and the camera/SLAM/depth pipeline are all "
+                    "initializing can exceed available RAM, causing the whole system "
+                    "to swap-thrash into total unresponsiveness (SD-card-speed swap "
+                    "under sustained pressure never triggers the OOM killer, so it "
+                    "doesn't recover on its own). Staggering the startup keeps peak "
+                    "memory demand from stacking."
                 ),
             ),
             DeclareLaunchArgument(
@@ -61,9 +73,9 @@ def generate_launch_description() -> LaunchDescription:
                         "frame_width": 320,
                         "frame_height": 240,
                         # Only ever one frame is used per stop cycle (see
-                        # depth_bridge_node.py / vo_node.py) — a low rate cuts
-                        # wasted capture/publish CPU and shrinks the window
-                        # where a new frame could land mid-depth-round-trip
+                        # depth_bridge_node.py / vo_node.py / orb_slam3_node) — a
+                        # low rate cuts wasted capture/publish CPU and shrinks the
+                        # window where a new frame could land mid-depth-round-trip
                         # and get mismatched against the wrong depth map.
                         "publish_rate_hz": 2.0,
                     }
@@ -84,23 +96,57 @@ def generate_launch_description() -> LaunchDescription:
                 ],
                 output="screen",
             ),
-            # ── Visual odometry (frame-to-frame PnP, triggered per stop cycle) ─────
+            # ── ORB-SLAM3 (RGBD, primary pose source) ───────────────────────────────
+            Node(
+                package="rover_slam",
+                executable="orb_slam3_node",
+                name="orb_slam3_node",
+                parameters=[
+                    {
+                        "vocab_path": vocab_path,
+                        "settings_path": settings_path,
+                    }
+                ],
+                output="screen",
+                sigterm_timeout="3",
+                sigkill_timeout="3",
+            ),
+            # ── Independent frame-to-frame VO cross-check (see slam_pose_bridge.py) ──
             Node(
                 package="rover_navigation",
                 executable="vo_node",
                 name="vo_node",
                 output="screen",
             ),
+            # ── SLAM pose bridge: publishes /rover/odom + odom->base_link TF only ───
+            # when ORB-SLAM3's pose and vo_node's independent measurement agree —
+            # see slam_pose_bridge.py's module docstring. position_scale starts at
+            # 1.0 (not the old, never-fully-diagnosed 9.6) pending fresh
+            # hand-push recalibration now that depth is ultrasonic-corrected
+            # from the start.
+            Node(
+                package="rover_navigation",
+                executable="slam_pose_bridge",
+                name="slam_pose_bridge",
+                parameters=[{"camera_tilt_deg": 2.0, "position_scale": 1.0}],
+            ),
+            # ── Ultrasonic → LaserScan (Nav2 costmap obstacle_layer observation source) ──
+            Node(
+                package="rover_navigation",
+                executable="ultrasonic_to_scan_node",
+                name="ultrasonic_to_scan_node",
+            ),
             # ── TF: map -> odom, static identity ────────────────────────────────────
-            # No absolute correction source (no lidar, no mapping) — vo_node's
-            # accumulated pose is the whole story, so map and odom coincide.
+            # No absolute correction source (no lidar, no saved map) — the
+            # cross-checked SLAM3 pose is the whole story, so map and odom
+            # coincide.
             Node(
                 package="tf2_ros",
                 executable="static_transform_publisher",
                 name="map_to_odom_static",
                 arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
             ),
-            # ── Stop-and-go filter (bursts Nav2's cmd_vel, waits for a fresh VO fix) ─
+            # ── Stop-and-go filter (bursts Nav2's cmd_vel, waits for a fresh fix) ────
             Node(
                 package="rover_navigation",
                 executable="stop_and_go_filter_node",

@@ -4,6 +4,7 @@ No ROS2 install required — vo_math.py has no rclpy dependency (see its
 module docstring), so it's imported directly by path here.
 """
 
+import math
 import os
 import sys
 
@@ -18,9 +19,12 @@ sys.path.insert(
 
 from vo_math import (  # noqa: E402
     camera_delta_to_base_link_delta,
+    deltas_agree,
     is_well_conditioned,
+    median_pixel_flow,
     solve_relative_pose,
     unproject,
+    world_delta_to_local,
 )
 
 CAMERA_MATRIX = np.array(
@@ -125,3 +129,47 @@ def test_is_well_conditioned_rejects_near_planar_points():
 def test_is_well_conditioned_accepts_points_with_real_depth_spread():
     points_prev = _synthetic_points(40, np.random.default_rng(3))
     assert is_well_conditioned(points_prev) is True
+
+
+def test_median_pixel_flow_zero_for_identical_points():
+    pts = np.array([[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]])
+    assert median_pixel_flow(pts, pts) == pytest.approx(0.0)
+
+
+def test_median_pixel_flow_matches_known_displacement():
+    prev_pts = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0]])
+    curr_pts = prev_pts + np.array([3.0, 4.0])  # every point shifts by 5px
+    assert median_pixel_flow(prev_pts, curr_pts) == pytest.approx(5.0)
+
+
+def test_world_delta_to_local_pure_forward_motion():
+    # Facing +45 degrees, moving 1m along that heading in world coordinates
+    # should read back as pure forward (dx=1, dy=0) in the local frame.
+    yaw = math.pi / 4
+    prev = (0.0, 0.0, yaw)
+    cur = (math.cos(yaw), math.sin(yaw), yaw)
+    dx, dy, dtheta = world_delta_to_local(*prev, *cur)
+    assert dx == pytest.approx(1.0)
+    assert dy == pytest.approx(0.0, abs=1e-9)
+    assert dtheta == pytest.approx(0.0)
+
+
+def test_world_delta_to_local_pure_rotation():
+    dx, dy, dtheta = world_delta_to_local(1.0, 2.0, 0.1, 1.0, 2.0, 0.1 + 0.3)
+    assert dx == pytest.approx(0.0)
+    assert dy == pytest.approx(0.0)
+    assert dtheta == pytest.approx(0.3)
+
+
+def test_deltas_agree_accepts_close_matches():
+    assert deltas_agree((0.20, 0.02, 0.01), (0.22, 0.00, 0.02)) is True
+
+
+def test_deltas_agree_rejects_ba_style_jump():
+    # A genuine ~0.2m step vs. a multi-meter reported jump — the exact
+    # failure mode this check exists to catch.
+    assert deltas_agree((0.20, 0.0, 0.0), (4.50, 0.0, 0.0)) is False
+
+
+def test_deltas_agree_rejects_large_yaw_disagreement():
+    assert deltas_agree((0.20, 0.0, 0.0), (0.20, 0.0, 1.2)) is False
