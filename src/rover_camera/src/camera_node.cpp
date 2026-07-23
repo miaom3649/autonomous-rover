@@ -34,6 +34,9 @@ public:
         declare_parameter("frame_id", std::string("camera_link"));
         declare_parameter("settle_delay_s", 0.5);
         declare_parameter("continuous_publish", false);
+        declare_parameter("auto_exposure", true);
+        declare_parameter("exposure_time_us", 8000);
+        declare_parameter("analogue_gain", 4.0);
 
         use_sim_            = get_parameter("use_sim").as_bool();
         width_              = get_parameter("frame_width").as_int();
@@ -42,6 +45,9 @@ public:
         frame_id_           = get_parameter("frame_id").as_string();
         settle_delay_       = get_parameter("settle_delay_s").as_double();
         continuous_publish_ = get_parameter("continuous_publish").as_bool();
+        auto_exposure_      = get_parameter("auto_exposure").as_bool();
+        exposure_time_us_   = get_parameter("exposure_time_us").as_int();
+        analogue_gain_      = get_parameter("analogue_gain").as_double();
         last_moving_ = get_clock()->now() - rclcpp::Duration::from_seconds(settle_delay_ + 1.0);
 
         pub_image_ = create_publisher<sensor_msgs::msg::Image>(
@@ -155,15 +161,27 @@ private:
             on_request_completed(req);
         });
 
-        // Auto-exposure: frames are only ever captured while the rover is
-        // stationary (settle_delay_ below, plus depth_bridge_node/orb_slam3_node's
-        // own stop-triggered fetch), so motion blur from a longer exposure
-        // isn't a concern — and a fixed exposure/gain doesn't adapt across
-        // the different rooms/lighting this rover gets tested in, which
-        // previously produced underexposed frames with too few ORB features
-        // for SLAM to track.
+        // Auto-exposure (default): frames are only ever captured while the
+        // rover is stationary (settle_delay_ below, plus
+        // depth_bridge_node/orb_slam3_node's own stop-triggered fetch), so
+        // motion blur from a longer exposure isn't a concern — and a fixed
+        // exposure/gain doesn't adapt across the different rooms/lighting
+        // this rover gets tested in, which previously produced underexposed
+        // frames with too few ORB features for SLAM to track.
+        //
+        // Manual exposure (auto_exposure:=false, slam_teleop.launch.py):
+        // for continuous-tracking-while-driving tests, a short fixed
+        // exposure caps motion blur regardless of scene brightness, at the
+        // cost of needing a higher analogue_gain (more sensor noise) to
+        // keep the image usable.
         ControlList controls(camera_->controls());
-        controls.set(controls::AeEnable, true);
+        if (auto_exposure_) {
+            controls.set(controls::AeEnable, true);
+        } else {
+            controls.set(controls::AeEnable, false);
+            controls.set(controls::ExposureTime, static_cast<int32_t>(exposure_time_us_));
+            controls.set(controls::AnalogueGain, static_cast<float>(analogue_gain_));
+        }
 
         if (camera_->start(&controls) != 0) {
             RCLCPP_ERROR(get_logger(), "Camera::start() failed");
@@ -177,8 +195,14 @@ private:
             }
         }
 
-        RCLCPP_INFO(get_logger(), "Camera ready: %dx%d @ %.0f fps, exposure 8 ms",
-            width_, height_, fps_);
+        if (auto_exposure_) {
+            RCLCPP_INFO(get_logger(), "Camera ready: %dx%d @ %.0f fps, auto exposure",
+                width_, height_, fps_);
+        } else {
+            RCLCPP_INFO(get_logger(),
+                "Camera ready: %dx%d @ %.0f fps, manual exposure=%ldus gain=%.1f",
+                width_, height_, fps_, exposure_time_us_, analogue_gain_);
+        }
         return true;
     }
 
@@ -269,6 +293,9 @@ private:
     std::string frame_id_;
     double settle_delay_;
     bool continuous_publish_;
+    bool auto_exposure_;
+    int64_t exposure_time_us_;
+    double analogue_gain_;
     rclcpp::Time last_moving_;
     PixelFormat pixel_format_;
 

@@ -15,6 +15,15 @@ continuous_mode:=true removes its own independent stop-gate but still only
 ever has one request in flight at a time, so this is the real ceiling on how
 often orb_slam3_node gets a synced RGBD pair while driving.
 
+Motion blur while driving was confirmed to lose tracking immediately even
+with continuous capture, so camera_node also runs with auto_exposure:=false
+here — a short fixed exposure_time_us caps blur regardless of scene
+brightness, at the cost of needing more analogue_gain (more sensor noise) to
+keep the image usable. Both are overridable from the command line for quick
+retuning without a rebuild, e.g.:
+    ros2 launch rover_bringup slam_teleop.launch.py \\
+        exposure_time_us:=1000 analogue_gain:=16.0
+
 To drive, run teleop_twist_keyboard separately with its output remapped:
     ros2 run teleop_twist_keyboard teleop_twist_keyboard \\
         --ros-args -r cmd_vel:=/rover/cmd_vel_teleop
@@ -46,6 +55,16 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="http://192.168.3.33:8765/depth",
                 description="URL of the Windows depth inference server",
             ),
+            DeclareLaunchArgument(
+                "exposure_time_us",
+                default_value="1000",
+                description="Fixed camera exposure time in microseconds (motion-blur test)",
+            ),
+            DeclareLaunchArgument(
+                "analogue_gain",
+                default_value="16.0",
+                description="Camera analogue gain to compensate for the short exposure",
+            ),
             Node(
                 package="rover_base",
                 executable="drive_node",
@@ -68,6 +87,9 @@ def generate_launch_description() -> LaunchDescription:
                         "frame_height": 240,
                         "publish_rate_hz": 10.0,
                         "continuous_publish": True,
+                        "auto_exposure": False,
+                        "exposure_time_us": LaunchConfiguration("exposure_time_us"),
+                        "analogue_gain": LaunchConfiguration("analogue_gain"),
                     }
                 ],
             ),
