@@ -1,19 +1,22 @@
 """
 Live rover dashboard — runs on the Pi as part of nav.launch.py.
 
-Subscribes to the camera, corrected depth, mode, and ultrasonic topics and
-serves a combined view as MJPEG over HTTP for debugging — open
-http://raspberrypi.local:8082 in a browser. Shows a 2x2 grid:
-  - Top row: RGB camera feed, and the corrected depth map annotated with the
-    same per-region grid as scripts/depth_viewer.py
-  - Bottom row: ORB-SLAM3's own debug view (tracked keypoints on the current
-    frame, green when tracking is OK and red otherwise — drawn by
-    orb_slam3_node.cpp itself), and a live top-down scatter plot of
-    ORB-SLAM3's accumulated map points (/orb_slam3/map_points) — points seen
-    across the whole run, not just the current frame, so map coverage/shape
-    builds up visually as you walk the rover around. Both bottom panels are
-    blank placeholders until orb_slam3_node is actually running and
-    publishing (e.g. slam_preview.launch.py).
+Subscribes to the camera, corrected depth, lidar, mode, and ultrasonic
+topics and serves a combined view as MJPEG over HTTP for debugging — open
+http://raspberrypi.local:8082 in a browser. Shows a 3x2 grid:
+  - Top row: RGB camera feed, the corrected depth map annotated with the
+    same per-region grid as scripts/depth_viewer.py, and ORB-SLAM3's own
+    debug view (tracked keypoints on the current frame, green when tracking
+    is OK and red otherwise — drawn by orb_slam3_node.cpp itself). These
+    three are only populated under the camera/SLAM3 diagnostic launches
+    (slam_preview.launch.py, slam_teleop.launch.py) — blank placeholders
+    under nav.launch.py, which no longer runs the camera.
+  - Bottom row: a live top-down scatter plot of ORB-SLAM3's accumulated map
+    points (/orb_slam3/map_points), a live top-down scatter of the lidar's
+    current /scan, and slam_toolbox's accumulated /map occupancy grid. The
+    lidar panels are only populated under nav.launch.py (its primary
+    localization/mapping source); the ORB-SLAM3 map-points panel is only
+    populated under the camera diagnostic launches, same as the top row.
   - Current MANUAL/AUTO mode
   - Ultrasonic reading and the correction scale depth_bridge_node applied
   - The robot's estimated position, looked up from the map->base_link TF
@@ -36,9 +39,10 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
+from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image, PointCloud, Range
+from sensor_msgs.msg import Image, LaserScan, PointCloud, Range
 from std_msgs.msg import Float32, String
 from tf2_ros import (
     Buffer,
@@ -155,6 +159,106 @@ def _render_map_panel(points: list[tuple[float, float]], h: int, w: int) -> np.n
     return panel
 
 
+def _render_scan_panel(scan: LaserScan | None, h: int, w: int) -> np.ndarray:
+    """Live top-down scatter of the lidar's current /scan, centered on the lidar.
+
+    Unlike _render_map_panel's auto-fit scaling (fine for a slowly-growing
+    accumulated point set), this uses a fixed display radius so the view
+    doesn't visibly jump/rescale every single frame — much easier to read
+    live.
+    """
+    panel = np.zeros((h, w, 3), dtype=np.uint8)
+    if scan is None or not scan.ranges:
+        cv2.putText(
+            panel,
+            "no /scan yet",
+            (10, h // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return panel
+
+    ranges = np.array(scan.ranges, dtype=np.float32)
+    angles = scan.angle_min + np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
+    valid = np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= scan.range_max)
+    ranges, angles = ranges[valid], angles[valid]
+
+    display_radius_m = min(float(scan.range_max), 8.0)
+    margin = 20
+    scale = (min(h, w) / 2 - margin) / display_radius_m
+    cx, cy = w // 2, h // 2
+
+    xs = cx + ranges * np.cos(angles) * scale
+    ys = cy - ranges * np.sin(angles) * scale  # flip so +y (left) is up on screen
+    px = np.clip(xs.astype(np.int32), 0, w - 1)
+    py = np.clip(ys.astype(np.int32), 0, h - 1)
+    panel[py, px] = (0, 220, 255)
+
+    cv2.drawMarker(panel, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
+    cv2.putText(
+        panel,
+        f"lidar /scan (live, {display_radius_m:.0f}m radius, {valid.sum()} pts)",
+        (6, 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return panel
+
+
+def _render_occupancy_panel(
+    grid: OccupancyGrid | None, pose: tuple[float, float, float] | None, h: int, w: int
+) -> np.ndarray:
+    """Render slam_toolbox's accumulated /map (nav_msgs/OccupancyGrid), top-down."""
+    if grid is None or grid.info.width == 0 or grid.info.height == 0:
+        panel = np.zeros((h, w, 3), dtype=np.uint8)
+        cv2.putText(
+            panel,
+            "no /map yet",
+            (10, h // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return panel
+
+    gw, gh = grid.info.width, grid.info.height
+    cells = np.array(grid.data, dtype=np.int16).reshape(gh, gw)
+    gray = np.where(cells < 0, 127, 255 - (np.clip(cells, 0, 100) * 255 // 100)).astype(np.uint8)
+    img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    if pose is not None:
+        res = grid.info.resolution
+        col = (pose[0] - grid.info.origin.position.x) / res
+        row = (pose[1] - grid.info.origin.position.y) / res
+        px, py = int(col), int(row)
+        if 0 <= px < gw and 0 <= py < gh:
+            cv2.drawMarker(img, (px, py), (0, 0, 255), cv2.MARKER_CROSS, max(gw // 40, 4), 2)
+
+    # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
+    img = cv2.flip(img, 0)
+    if (gh, gw) != (h, w):
+        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST)
+    cv2.putText(
+        img,
+        f"slam_toolbox map ({gw}x{gh} @ {grid.info.resolution:.2f}m/px)",
+        (6, 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (0, 255, 0),
+        1,
+        cv2.LINE_AA,
+    )
+    return img
+
+
 class _MjpegHandler(BaseHTTPRequestHandler):
     latest_jpeg: bytes | None = None
     lock = threading.Lock()
@@ -189,6 +293,8 @@ class DashboardNode(Node):
         self._slam_debug: np.ndarray | None = None
         self._slam_debug_stamp = 0.0
         self._map_points: list[tuple[float, float]] = []
+        self._scan: LaserScan | None = None
+        self._occupancy_grid: OccupancyGrid | None = None
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
         self._ultrasonic_stamp = 0.0
@@ -209,6 +315,10 @@ class DashboardNode(Node):
         )
         self.create_subscription(
             PointCloud, "/orb_slam3/map_points", self._on_map_points, qos_profile_sensor_data
+        )
+        self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
+        self.create_subscription(
+            OccupancyGrid, "/map", self._on_occupancy_grid, qos_profile_sensor_data
         )
         self.create_subscription(String, "/rover/current_mode", self._on_mode, 10)
         self.create_subscription(
@@ -240,6 +350,12 @@ class DashboardNode(Node):
         if remaining <= 0:
             return
         self._map_points.extend((p.x, p.z) for p in msg.points[:remaining])
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        self._scan = msg
+
+    def _on_occupancy_grid(self, msg: OccupancyGrid) -> None:
+        self._occupancy_grid = msg
 
     def _on_mode(self, msg: String) -> None:
         self._mode = msg.data
@@ -336,9 +452,13 @@ class DashboardNode(Node):
                 1,
                 cv2.LINE_AA,
             )
+        pose = self._lookup_pose()
+
         map_panel = _render_map_panel(self._map_points, h, w)
-        top_row = np.hstack([rgb_panel, depth_panel])
-        bottom_row = np.hstack([slam_panel, map_panel])
+        scan_panel = _render_scan_panel(self._scan, h, w)
+        occupancy_panel = _render_occupancy_panel(self._occupancy_grid, pose, h, w)
+        top_row = np.hstack([rgb_panel, depth_panel, slam_panel])
+        bottom_row = np.hstack([map_panel, scan_panel, occupancy_panel])
         combined = np.vstack([top_row, bottom_row])
 
         if self._ultrasonic_range is not None and now - self._ultrasonic_stamp < STALE_AFTER_S:
@@ -348,7 +468,6 @@ class DashboardNode(Node):
         else:
             us_text = "ultrasonic: no reading"
 
-        pose = self._lookup_pose()
         if pose is not None:
             pos_text = f"position: x={pose[0]:.2f}m  y={pose[1]:.2f}m  yaw={pose[2]:+.1f}°"
         else:
