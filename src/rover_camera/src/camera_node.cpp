@@ -33,14 +33,16 @@ public:
         declare_parameter("publish_rate_hz", 15.0);
         declare_parameter("frame_id", std::string("camera_link"));
         declare_parameter("settle_delay_s", 0.5);
+        declare_parameter("continuous_publish", false);
 
-        use_sim_       = get_parameter("use_sim").as_bool();
-        width_         = get_parameter("frame_width").as_int();
-        height_        = get_parameter("frame_height").as_int();
-        fps_           = get_parameter("publish_rate_hz").as_double();
-        frame_id_      = get_parameter("frame_id").as_string();
-        settle_delay_  = get_parameter("settle_delay_s").as_double();
-        last_moving_   = get_clock()->now() - rclcpp::Duration::from_seconds(settle_delay_ + 1.0);
+        use_sim_            = get_parameter("use_sim").as_bool();
+        width_              = get_parameter("frame_width").as_int();
+        height_             = get_parameter("frame_height").as_int();
+        fps_                = get_parameter("publish_rate_hz").as_double();
+        frame_id_           = get_parameter("frame_id").as_string();
+        settle_delay_       = get_parameter("settle_delay_s").as_double();
+        continuous_publish_ = get_parameter("continuous_publish").as_bool();
+        last_moving_ = get_clock()->now() - rclcpp::Duration::from_seconds(settle_delay_ + 1.0);
 
         pub_image_ = create_publisher<sensor_msgs::msg::Image>(
             "/rover/camera/image_raw", rclcpp::SensorDataQoS());
@@ -220,8 +222,10 @@ private:
             frame = make_checkerboard();
             stamp = get_clock()->now();
         } else {
-            double since_moving = (get_clock()->now() - last_moving_).seconds();
-            if (since_moving < settle_delay_) return;
+            if (!continuous_publish_) {
+                double since_moving = (get_clock()->now() - last_moving_).seconds();
+                if (since_moving < settle_delay_) return;
+            }
 
             std::lock_guard<std::mutex> lk(frame_mutex_);
             if (latest_frame_.empty() || frame_seq_ == last_pub_seq_) return;
@@ -264,6 +268,7 @@ private:
     double fps_;
     std::string frame_id_;
     double settle_delay_;
+    bool continuous_publish_;
     rclcpp::Time last_moving_;
     PixelFormat pixel_format_;
 

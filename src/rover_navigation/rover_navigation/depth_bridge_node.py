@@ -4,7 +4,9 @@ Depth bridge — runs on the Raspberry Pi.
 Monitors /rover/cmd_vel for stop events, grabs one frame per stop,
 POSTs it to the Windows depth server, and publishes the metric depth
 map as /rover/camera/depth (32FC1, meters) with the source frame's
-original timestamp.
+original timestamp. With continuous_mode:=true, the stop/settle wait
+is skipped entirely — a new frame is fetched as soon as the previous
+request completes, throttled only by the depth server's own round trip.
 
 The AI depth model is only scale-approximate (monocular metric depth is an
 ill-posed problem — see README for measured error). When a fresh ultrasonic
@@ -41,6 +43,7 @@ class DepthBridgeNode(Node):
         self.declare_parameter("ultrasonic_correction", False)
         self.declare_parameter("ultrasonic_max_age", 1.0)
         self.declare_parameter("depth_region_frac", 0.2)
+        self.declare_parameter("continuous_mode", False)
 
         self._server_url: str = self.get_parameter("depth_server_url").value
         self._settle_delay: float = float(self.get_parameter("settle_delay").value)
@@ -48,6 +51,7 @@ class DepthBridgeNode(Node):
         self._ultrasonic_correction: bool = bool(self.get_parameter("ultrasonic_correction").value)
         self._ultrasonic_max_age: float = float(self.get_parameter("ultrasonic_max_age").value)
         self._region_frac: float = float(self.get_parameter("depth_region_frac").value)
+        self._continuous_mode: bool = bool(self.get_parameter("continuous_mode").value)
 
         self._bridge = CvBridge()
         self._lock = threading.Lock()
@@ -94,10 +98,13 @@ class DepthBridgeNode(Node):
 
     def _check_stop(self) -> None:
         with self._lock:
-            elapsed = time.monotonic() - self._last_moving_time
             frame = self._latest_frame
-            if elapsed < self._settle_delay or frame is None or self._processing:
+            if frame is None or self._processing:
                 return
+            if not self._continuous_mode:
+                elapsed = time.monotonic() - self._last_moving_time
+                if elapsed < self._settle_delay:
+                    return
             self._processing = True
             self._latest_frame = None  # consume — prevents double-firing this stop cycle
 
