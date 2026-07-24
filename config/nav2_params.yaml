@@ -46,7 +46,10 @@ controller_server:
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       required_movement_radius: 0.1
-      movement_time_allowance: 30.0
+      # Was 30s — too slow to react when the ultrasonic e-stop (invisible to
+      # Nav2's own costmap) blocks forward motion; 5s gets the backup/retry
+      # recovery going much sooner.
+      movement_time_allowance: 5.0
 
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
