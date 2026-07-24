@@ -543,6 +543,12 @@ class DashboardNode(Node):
     def _on_navigate_result(self, future) -> None:
         self._nav_goal_handle = None
         self.get_logger().info(f"navigate_to_pose finished: status={future.result().status}")
+        # Without wheel odometry, slam_toolbox occasionally mismatches a scan
+        # and permanently bakes a cluster of phantom points into the map —
+        # errors only accumulate over a run, never self-correct. Wiping the
+        # map after each navigation attempt bounds how much clutter can pile
+        # up, regardless of whether the goal was actually reached.
+        self.reset_map()
 
     def clear_goal(self) -> None:
         """Cancel any in-flight navigation and clear the local goal/path state."""

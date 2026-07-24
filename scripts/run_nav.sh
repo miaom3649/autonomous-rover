@@ -27,7 +27,11 @@ if [[ ! -f "$WS_SETUP" ]]; then
     exit 1
 fi
 
+# The YDLidar SDK itself (not our driver code, and not gated by any ROS
+# parameter) prints "Real points N > fixed points M" whenever the X3's
+# actual RPM drifts slightly from the nominal rate — harmless, constant
+# noise, filtered here since there's nothing to fix on our side.
 exec systemd-run --scope --user \
     -p MemoryMax="$MEMORY_MAX" \
     -p MemorySwapMax="$MEMORY_SWAP_MAX" \
-    -- bash -c "source $ROS_SETUP && source $WS_SETUP && exec ros2 launch rover_bringup nav.launch.py $*"
+    -- bash -c "set -o pipefail; source $ROS_SETUP && source $WS_SETUP && ros2 launch rover_bringup nav.launch.py $* 2>&1 | grep --line-buffered -Ev 'Real points [0-9]+ > fixed points [0-9]+'"
