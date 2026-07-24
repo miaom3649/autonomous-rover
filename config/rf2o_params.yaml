@@ -1,0 +1,11 @@
+rf2o_laser_odometry:
+  ros__parameters:
+    laser_scan_topic: /scan
+    odom_topic: /rover/odom
+    publish_tf: true
+    base_frame_id: base_link
+    odom_frame_id: odom
+    # Empty = no ground-truth pose source to initialize from; starts at the
+    # origin, same as slam_toolbox's own map_start_pose.
+    init_pose_from_topic: ""
+    freq: 20.0

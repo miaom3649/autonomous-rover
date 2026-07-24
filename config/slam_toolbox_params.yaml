@@ -9,18 +9,16 @@ slam_toolbox:
     base_frame: base_link
     scan_topic: /scan
 
-    # No wheel odometry on this rover and vision-based (ORB-SLAM3) localization
-    # has been retired — odom_frame is published as a static identity onto
-    # base_link (see nav.launch.py), so slam_toolbox gets no external motion
-    # prior at all and relies entirely on scan-to-scan / scan-to-map matching.
+    # No wheel encoders on this rover — odom_frame -> base_frame now comes from
+    # rf2o_laser_odometry (pure lidar scan-to-scan odometry, see nav.launch.py)
+    # instead of the old static-identity placeholder, giving slam_toolbox a
+    # real (if imperfect — it drifts like any odometry) motion prior to narrow
+    # its own scan-matching search around, rather than searching blind.
     use_scan_matching: true
 
-    # slam_toolbox normally only processes a new scan once odometry reports
-    # the robot has moved at least this far/turned this much — since our
-    # odom is a static identity (no wheel encoders), that delta is always
-    # exactly zero and every scan would be skipped forever, freezing the
-    # published pose at the origin. Zeroing these thresholds makes it
-    # process every incoming scan regardless of what odom (doesn't) say.
+    # Kept at 0 so slam_toolbox still processes every incoming scan rather
+    # than gating on rf2o's own movement estimate, which has no independent
+    # way to detect wheel slip / mismatches of its own to be gated on.
     minimum_travel_distance: 0.0
     minimum_travel_heading: 0.0
 

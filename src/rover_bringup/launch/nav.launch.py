@@ -18,6 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     slam_toolbox_params = os.path.join(
         home, "dev", "autonomous-rover", "config", "slam_toolbox_params.yaml"
     )
+    rf2o_params = os.path.join(home, "dev", "autonomous-rover", "config", "rf2o_params.yaml")
 
     return LaunchDescription(
         [
@@ -79,6 +80,18 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[lidar_params],
                 output="screen",
             ),
+            # ── Laser odometry (rf2o) — this rover has no wheel encoders, so this
+            # estimates odom -> base_link purely from consecutive /scan frames and
+            # publishes both /rover/odom and the TF, replacing the old static-
+            # identity placeholder. Gives slam_toolbox a real motion prior to
+            # narrow its scan-matching search around instead of searching blind.
+            Node(
+                package="rf2o_laser_odometry",
+                executable="rf2o_laser_odometry_node",
+                name="rf2o_laser_odometry",
+                parameters=[rf2o_params],
+                output="screen",
+            ),
             # ── slam_toolbox (mapping mode, pure scan-matching — no wheel odometry) ──
             # respawn=True: slam_toolbox has no "clear map" service, so dashboard_node's
             # reset-map button resets by killing this process outright — launch then
@@ -109,15 +122,8 @@ def generate_launch_description() -> LaunchDescription:
                     "laser_frame",
                 ],
             ),
-            # ── TF: odom -> base_link, static identity — no wheel encoders on this
-            # rover, so slam_toolbox gets no external motion prior and relies entirely
-            # on scan-to-scan / scan-to-map matching (map -> odom comes from slam_toolbox).
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="odom_to_base_link_static",
-                arguments=["0", "0", "0", "0", "0", "0", "odom", "base_link"],
-            ),
+            # odom -> base_link is now published dynamically by rf2o_laser_odometry
+            # above, not a static identity transform.
             # ── Mode controller (MANUAL/AUTO arbitration + estop) ──
             Node(
                 package="rover_control",
