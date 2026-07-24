@@ -57,6 +57,8 @@ GRID_ROWS = 3
 GRID_COLS = 4
 STALE_AFTER_S = 2.0
 MAX_MAP_POINTS = 20000
+FALLBACK_PANEL_H = 240
+FALLBACK_PANEL_W = 320
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 
@@ -391,10 +393,24 @@ class DashboardNode(Node):
         )
 
     def _render(self) -> None:
-        if self._rgb is None:
-            return
-        h, w = self._rgb.shape[:2]
-        rgb_panel = self._rgb.copy()
+        if self._rgb is not None:
+            h, w = self._rgb.shape[:2]
+            rgb_panel = self._rgb.copy()
+        else:
+            # No camera_node under nav.launch.py (lidar-only) — fall back to a fixed
+            # panel size instead of bailing out, so the lidar panels below still render.
+            h, w = FALLBACK_PANEL_H, FALLBACK_PANEL_W
+            rgb_panel = np.zeros((h, w, 3), dtype=np.uint8)
+            cv2.putText(
+                rgb_panel,
+                "no camera (lidar-only launch)",
+                (10, h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         if self._depth is not None:
             depth_panel = _colorize_depth(self._depth)
