@@ -18,7 +18,6 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "depth_bridge_node = rover_navigation.depth_bridge_node:main",
             "dashboard_node = rover_navigation.dashboard_node:main",
         ],
     },

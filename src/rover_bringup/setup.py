@@ -14,8 +14,6 @@ setup(
             [
                 "launch/teleop.launch.py",
                 "launch/nav.launch.py",
-                "launch/slam_preview.launch.py",
-                "launch/slam_teleop.launch.py",
             ],
         ),
     ],
