@@ -294,43 +294,42 @@ def _render_occupancy_panel(
         if 0 <= gx < gw and 0 <= gy < gh:
             cv2.drawMarker(img, (gx, gy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, max(gw // 30, 6), 2)
 
-    if pose is not None:
-        res = grid.info.resolution
-        col = (pose[0] - grid.info.origin.position.x) / res
-        row = (pose[1] - grid.info.origin.position.y) / res
-        px, py = int(col), int(row)
-        if 0 <= px < gw and 0 <= py < gh:
-            # Dot + a short heading tick off its edge (power-button-icon
-            # style) rather than a plain "+": this is a top-down world-frame
-            # map (unlike the ego-centric scan panel), so heading isn't
-            # always "up" or "right" — draw it explicitly instead of leaving
-            # it to be guessed. Drawn in raw (unflipped) grid space, same as
-            # the position itself, so it comes out correct after the single
-            # flip below. Drawn *after* the path (not before) so it's never
-            # covered by it.
-            #
-            # Sized in *display* pixels (via the grid->panel scale factor),
-            # not raw grid cells — a fixed cell count is tiny on a big
-            # explored map and comically oversized on a small fresh one
-            # (e.g. right after a map reset), to the point of visually
-            # swallowing the path's actual starting point.
-            scale = w / gw
-            circle_r = max(round(4.0 / scale), 1)
-            tick_len = max(round(3.0 / scale), 1)
-            yaw_rad = math.radians(pose[2])
-            dx, dy = math.cos(yaw_rad), math.sin(yaw_rad)
-            tick_start = (int(px + circle_r * dx), int(py + circle_r * dy))
-            tick_end = (
-                int(px + (circle_r + tick_len) * dx),
-                int(py + (circle_r + tick_len) * dy),
-            )
-            cv2.circle(img, (px, py), circle_r, (0, 0, 255), -1)
-            cv2.line(img, tick_start, tick_end, (0, 0, 255), 2)
-
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
     img = cv2.flip(img, 0)
     if (gh, gw) != (h, w):
         img = cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    if pose is not None:
+        res = grid.info.resolution
+        col = (pose[0] - grid.info.origin.position.x) / res
+        row = (pose[1] - grid.info.origin.position.y) / res
+        if 0 <= col < gw and 0 <= row < gh:
+            # Dot + a short heading tick off its edge (power-button-icon
+            # style) rather than a plain "+": this is a top-down world-frame
+            # map (unlike the ego-centric scan panel), so heading isn't
+            # always "up" or "right" — draw it explicitly instead of leaving
+            # it to be guessed.
+            #
+            # Computed here in *display* pixel space (after the flip and
+            # resize above), with float precision kept until the final
+            # int() — doing this earlier in raw grid-cell units rounded a
+            # tick only ~1 cell long down to a single blocky, often
+            # misleading integer step on small/coarse maps (e.g. right
+            # after a map reset), destroying the angle it was meant to show.
+            dcol = col * (w / gw)
+            drow = (gh - 1 - row) * (h / gh)  # cv2.flip(img,0): new_row = gh-1-old_row
+            circle_r = 5.0
+            tick_len = 20.0
+            yaw_rad = math.radians(pose[2])
+            dx, dy = math.cos(yaw_rad), -math.sin(yaw_rad)  # -sin: row axis is flipped
+            center = (round(dcol), round(drow))
+            tick_end = (
+                round(dcol + (circle_r + tick_len) * dx),
+                round(drow + (circle_r + tick_len) * dy),
+            )
+            cv2.circle(img, center, round(circle_r), (0, 0, 255), -1)
+            cv2.line(img, center, tick_end, (0, 0, 255), 2)
+
     cv2.putText(
         img,
         f"slam_toolbox map ({gw}x{gh} @ {grid.info.resolution:.2f}m/px)",
