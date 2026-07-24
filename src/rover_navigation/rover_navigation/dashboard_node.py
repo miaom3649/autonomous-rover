@@ -7,31 +7,49 @@ http://raspberrypi.local:8082 in a browser. Shows a 1x2 grid:
   - Left: a live top-down scatter of the lidar's current /scan
   - Right: slam_toolbox's accumulated /map occupancy grid, with the robot's
     current position (from the map->base_link TF) marked on it, plus Nav2's
-    current global plan (/plan) drawn as a line with its endpoint (the goal)
-    marked, while a navigation goal is active
+    current plan (/plan) drawn as a line with its endpoint (the goal) marked
+    — populated either by a click-to-preview goal or an active navigation
   - Current MANUAL/AUTO mode
   - Ultrasonic reading
   - The robot's estimated position, looked up from the map->base_link TF
     (map->odom comes from slam_toolbox's scan matching; odom->base_link is
     a static identity — this rover has no wheel encoders)
 
-The page also has a "reset map" button. slam_toolbox has no built-in
-"clear the map and start over" service, so the reset works by killing the
-async_slam_toolbox_node process outright — nav.launch.py runs it with
-respawn=True, so launch immediately restarts it with a fresh, blank map.
+The page also has interactive controls:
+  - "Reset map": slam_toolbox has no built-in "clear the map and start over"
+    service, so this works by killing the async_slam_toolbox_node process
+    outright — nav.launch.py runs it with respawn=True, so launch
+    immediately restarts it with a fresh, blank map.
+  - Click the map panel to set a goal: fires a ComputePathToPose action
+    (preview only, doesn't drive) — its result path is published to /plan
+    as a side effect by planner_server regardless of who calls it, so the
+    existing /plan-driven rendering above shows the previewed route and
+    goal marker for free, with no separate preview state needed.
+  - "Move": sends the last-set goal as a real NavigateToPose action goal,
+    forcing mode to AUTO first (Nav2 commands are otherwise dropped by
+    mode_controller_node in MANUAL mode).
+  - "Clear goal": cancels any in-flight navigation and clears the local
+    goal/path state.
+  - "Toggle mode": flips MANUAL/AUTO via /rover/mode.
+  - Directional pad: press-and-hold buttons publish /rover/cmd_vel_teleop
+    (repeated every 200ms while held, under drive_node's 0.5s cmd_timeout)
+    and force mode to MANUAL first.
 """
 
+import json
 import math
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Optional
 
 import cv2
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PoseStamped, Twist
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Path
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, Range
@@ -51,27 +69,103 @@ PANEL_W = 640
 SCAN_DISPLAY_RADIUS_M = 4.0
 _INDEX_HTML = """<!doctype html>
 <html>
-<head><title>Rover Dashboard</title></head>
-<body style="margin:0;background:#111;color:#eee;font-family:sans-serif">
-  <div style="padding:8px">
-    <button id="resetBtn" style="font-size:16px;padding:6px 14px">Reset map</button>
+<head>
+<title>Rover Dashboard</title>
+<style>
+  body { margin:0; background:#111; color:#eee; font-family:sans-serif; user-select:none; }
+  button { font-size:16px; padding:6px 14px; }
+  #toolbar { padding:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #hint { padding:0 8px 4px; font-size:13px; color:#999; }
+  #dpad {
+    padding:12px; display:grid; gap:4px; justify-content:center;
+    grid-template-columns:56px 56px 56px; grid-template-rows:56px 56px 56px;
+  }
+  #dpad button { font-size:20px; padding:0; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="resetBtn">Reset map</button>
+    <button id="moveBtn">Move</button>
+    <button id="clearBtn">Clear goal</button>
+    <button id="modeBtn">Toggle mode</button>
     <span id="status"></span>
   </div>
-  <img src="/stream" style="width:100%;display:block">
+  <div id="hint">Click the map panel (right half) to set a goal</div>
+  <img id="stream" src="/stream" style="width:100%;display:block">
+  <div id="dpad">
+    <div></div><button class="drive" data-dir="up">&#9650;</button><div></div>
+    <button class="drive" data-dir="left">&#9664;</button><div></div>
+    <button class="drive" data-dir="right">&#9654;</button>
+    <div></div><button class="drive" data-dir="down">&#9660;</button><div></div>
+  </div>
   <script>
-    document.getElementById('resetBtn').onclick = async () => {
-      const btn = document.getElementById('resetBtn');
-      const status = document.getElementById('status');
-      btn.disabled = true;
-      status.textContent = ' resetting...';
+    const status = document.getElementById('status');
+    function flash(msg) {
+      status.textContent = ' ' + msg;
+      clearTimeout(flash._t);
+      flash._t = setTimeout(() => { status.textContent = ''; }, 1500);
+    }
+    async function post(path, body) {
       try {
-        const resp = await fetch('/reset', {method: 'POST'});
-        status.textContent = resp.ok ? ' done' : ' failed';
+        const resp = await fetch(path, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body || {}),
+        });
+        return resp.ok;
       } catch (e) {
-        status.textContent = ' failed';
+        return false;
       }
-      setTimeout(() => { btn.disabled = false; status.textContent = ''; }, 3000);
+    }
+
+    document.getElementById('resetBtn').onclick = async () => {
+      flash((await post('/reset')) ? 'map reset' : 'failed');
     };
+    document.getElementById('moveBtn').onclick = async () => {
+      flash((await post('/goal/move')) ? 'moving...' : 'failed');
+    };
+    document.getElementById('clearBtn').onclick = async () => {
+      flash((await post('/goal/clear')) ? 'goal cleared' : 'failed');
+    };
+    document.getElementById('modeBtn').onclick = async () => {
+      flash((await post('/mode/toggle')) ? 'mode toggled' : 'failed');
+    };
+
+    // Right half of the combined stream is the map panel — click it to set a goal.
+    document.getElementById('stream').addEventListener('click', async (e) => {
+      const rect = e.target.getBoundingClientRect();
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      if (fx < 0.5) {
+        flash('click the map panel (right side) to set a goal');
+        return;
+      }
+      const ok = await post('/goal/set', {fx: (fx - 0.5) * 2, fy: fy});
+      flash(ok ? 'goal set' : 'failed');
+    });
+
+    // Press-and-hold d-pad: repeat the drive command while held (under
+    // drive_node's 0.5s cmd_timeout), send one stop command on release.
+    let driveTimer = null;
+    function startDrive(dir) {
+      stopDrive();
+      post('/drive', {dir});
+      driveTimer = setInterval(() => post('/drive', {dir}), 200);
+    }
+    function stopDrive() {
+      if (driveTimer) { clearInterval(driveTimer); driveTimer = null; }
+      post('/drive', {dir: 'stop'});
+    }
+    document.querySelectorAll('.drive').forEach((btn) => {
+      const dir = btn.dataset.dir;
+      btn.addEventListener('mousedown', () => startDrive(dir));
+      btn.addEventListener('touchstart', (e) => { e.preventDefault(); startDrive(dir); });
+      btn.addEventListener('mouseup', stopDrive);
+      btn.addEventListener('mouseleave', stopDrive);
+      btn.addEventListener('touchend', stopDrive);
+      btn.addEventListener('touchcancel', stopDrive);
+    });
   </script>
 </body>
 </html>
@@ -84,6 +178,19 @@ _MODE_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+# Matches mode_controller_node's subscription QoS for /rover/mode and
+# /rover/cmd_vel_teleop (plain RELIABLE + VOLATILE, its shared _RELIABLE profile).
+_CMD_QOS = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+# Ackermann steering can't rotate in place, so left/right nudge a bit of
+# forward speed along with the turn — otherwise the button would just steer
+# the front wheels without visibly moving the rover.
+_DRIVE_TWISTS = {
+    "up": (0.2, 0.0),
+    "down": (-0.2, 0.0),
+    "left": (0.15, 1.0),
+    "right": (0.15, -1.0),
+    "stop": (0.0, 0.0),
+}
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 
@@ -215,7 +322,20 @@ def _render_occupancy_panel(
 class _MjpegHandler(BaseHTTPRequestHandler):
     latest_jpeg: bytes | None = None
     lock = threading.Lock()
-    reset_callback: Optional[Callable[[], None]] = None
+    node: "DashboardNode | None" = None
+
+    # path -> (node, parsed_json_body) -> None. Kept as simple lambdas since
+    # each just forwards to one DashboardNode method.
+    _ROUTES = {
+        "/reset": lambda node, body: node.reset_map(),
+        "/goal/set": lambda node, body: node.set_goal_from_fraction(
+            float(body.get("fx", 0.5)), float(body.get("fy", 0.5))
+        ),
+        "/goal/move": lambda node, body: node.move_to_goal(),
+        "/goal/clear": lambda node, body: node.clear_goal(),
+        "/mode/toggle": lambda node, body: node.toggle_mode(),
+        "/drive": lambda node, body: node.drive(str(body.get("dir", "stop"))),
+    }
 
     def log_message(self, *args) -> None:
         pass
@@ -251,17 +371,33 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             pass
 
     def do_POST(self) -> None:
-        if self.path == "/reset" and _MjpegHandler.reset_callback is not None:
-            _MjpegHandler.reset_callback()
-            body = b"ok"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw_body = self.rfile.read(length) if length else b""
+        try:
+            body = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            body = {}
+
+        node = _MjpegHandler.node
+        route = _MjpegHandler._ROUTES.get(self.path)
+        if node is None or route is None:
             self.send_response(404)
             self.end_headers()
+            return
+        try:
+            route(node, body)
+        except Exception:
+            node.get_logger().exception(f"dashboard POST {self.path} failed")
+            self.send_response(500)
+            self.end_headers()
+            return
+
+        resp_body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.end_headers()
+        self.wfile.write(resp_body)
 
 
 class DashboardNode(Node):
@@ -274,6 +410,8 @@ class DashboardNode(Node):
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
         self._ultrasonic_stamp = 0.0
+        self._goal_pose: tuple[float, float, float] | None = None
+        self._nav_goal_handle = None
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -287,6 +425,11 @@ class DashboardNode(Node):
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )
         self.create_subscription(Path, "/plan", self._on_plan, 10)
+
+        self._mode_pub = self.create_publisher(String, "/rover/mode", _CMD_QOS)
+        self._teleop_pub = self.create_publisher(Twist, "/rover/cmd_vel_teleop", _CMD_QOS)
+        self._compute_path_client = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
+        self._navigate_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
 
         self.create_timer(0.1, self._render)
         self.create_timer(2.0, self._log_pose)
@@ -313,6 +456,100 @@ class DashboardNode(Node):
         self.get_logger().warn("Reset map requested — restarting slam_toolbox")
         self._occupancy_grid = None
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
+
+    def set_goal_from_fraction(self, fx: float, fy: float) -> None:
+        """Convert a click on the map panel (fractional x/y, 0..1) to a map-frame goal."""
+        grid = self._occupancy_grid
+        if grid is None:
+            self.get_logger().warn("Can't set goal — no /map yet")
+            return
+        gw, gh = grid.info.width, grid.info.height
+        res = grid.info.resolution
+        col = fx * gw
+        row = (1.0 - fy) * gh  # undo _render_occupancy_panel's vertical flip
+        x = grid.info.origin.position.x + col * res
+        y = grid.info.origin.position.y + row * res
+        self._set_goal(x, y, 0.0)
+
+    def _set_goal(self, x: float, y: float, yaw: float) -> None:
+        self._goal_pose = (x, y, yaw)
+        self.get_logger().info(f"Goal set: x={x:.2f} y={y:.2f} — previewing path")
+        if not self._compute_path_client.server_is_ready():
+            self.get_logger().warn("compute_path_to_pose server not ready")
+            return
+        goal_msg = ComputePathToPose.Goal()
+        goal_msg.goal = self._pose_stamped(x, y, yaw)
+        goal_msg.use_start = False
+        future = self._compute_path_client.send_goal_async(goal_msg)
+        future.add_done_callback(self._on_compute_path_response)
+
+    def _on_compute_path_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn("compute_path_to_pose goal rejected")
+            return
+        # No further action needed — planner_server publishes the resulting
+        # path to /plan itself, which _on_plan/_render already pick up.
+        goal_handle.get_result_async()
+
+    def move_to_goal(self) -> None:
+        """Send the last-set goal as a real NavigateToPose action, forcing AUTO mode."""
+        if self._goal_pose is None:
+            self.get_logger().warn("Move requested but no goal is set")
+            return
+        x, y, yaw = self._goal_pose
+        self._publish_mode("AUTO")
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = self._pose_stamped(x, y, yaw)
+        future = self._navigate_client.send_goal_async(goal_msg)
+        future.add_done_callback(self._on_navigate_goal_response)
+
+    def _on_navigate_goal_response(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn("navigate_to_pose goal rejected")
+            return
+        self._nav_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._on_navigate_result)
+
+    def _on_navigate_result(self, future) -> None:
+        self._nav_goal_handle = None
+        self.get_logger().info(f"navigate_to_pose finished: status={future.result().status}")
+
+    def clear_goal(self) -> None:
+        """Cancel any in-flight navigation and clear the local goal/path state."""
+        self._goal_pose = None
+        self._nav_path = None
+        if self._nav_goal_handle is not None:
+            self._nav_goal_handle.cancel_goal_async()
+            self._nav_goal_handle = None
+
+    def toggle_mode(self) -> None:
+        self._publish_mode("MANUAL" if self._mode == "AUTO" else "AUTO")
+
+    def drive(self, direction: str) -> None:
+        linear, angular = _DRIVE_TWISTS.get(direction, (0.0, 0.0))
+        self._publish_mode("MANUAL")
+        msg = Twist()
+        msg.linear.x = linear
+        msg.angular.z = angular
+        self._teleop_pub.publish(msg)
+
+    def _publish_mode(self, mode: str) -> None:
+        msg = String()
+        msg.data = mode
+        self._mode_pub.publish(msg)
+
+    def _pose_stamped(self, x: float, y: float, yaw: float) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        return pose
 
     def _lookup_pose(self) -> tuple[float, float, float] | None:
         """Return (x, y, yaw_deg) from the map->base_link TF, or None if unavailable."""
@@ -380,7 +617,7 @@ class DashboardNode(Node):
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
     node = DashboardNode()
-    _MjpegHandler.reset_callback = node.reset_map
+    _MjpegHandler.node = node
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), _MjpegHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
