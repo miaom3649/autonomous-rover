@@ -34,6 +34,11 @@ The page also has interactive controls:
   - Directional pad: press-and-hold buttons publish /rover/cmd_vel_teleop
     (repeated every 200ms while held, under drive_node's 0.5s cmd_timeout)
     and force mode to MANUAL first.
+  - Status bar (top): current navigation status (not started / planning
+    failed / navigating / succeeded / canceled / failed) plus a live,
+    independent "obstacle blocking forward motion" indicator sourced from
+    mode_controller_node's /rover/obstacle_blocked — polled from /nav_status
+    every 500ms.
 """
 
 import json
@@ -53,7 +58,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, Range
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from tf2_ros import (
     Buffer,
     ConnectivityException,
@@ -64,6 +69,8 @@ from tf2_ros import (
 
 PORT = 8082
 STALE_AFTER_S = 2.0
+# action_msgs/msg/GoalStatus terminal values
+_GOAL_STATUS_TEXT = {4: "成功到达", 5: "已取消", 6: "导航失败"}
 PANEL_H = 480
 PANEL_W = 640
 SCAN_DISPLAY_RADIUS_M = 4.0
@@ -81,9 +88,14 @@ _INDEX_HTML = """<!doctype html>
     grid-template-columns:56px 56px 56px; grid-template-rows:56px 56px 56px;
   }
   #dpad button { font-size:20px; padding:0; }
+  #navStatus {
+    padding:6px 12px; font-size:14px; background:#333; border-bottom:1px solid #000;
+  }
+  #navStatus.obstacle { background:#5a1a1a; color:#ffb3b3; }
 </style>
 </head>
 <body>
+  <div id="navStatus">nav: —</div>
   <div id="toolbar">
     <button id="resetBtn">Reset map</button>
     <button id="moveBtn">Move</button>
@@ -166,6 +178,21 @@ _INDEX_HTML = """<!doctype html>
       btn.addEventListener('touchend', stopDrive);
       btn.addEventListener('touchcancel', stopDrive);
     });
+
+    // Poll the current navigation status + live obstacle-block state.
+    const navStatus = document.getElementById('navStatus');
+    async function pollNavStatus() {
+      try {
+        const resp = await fetch('/nav_status');
+        const data = await resp.json();
+        let text = 'nav: ' + data.status;
+        if (data.obstacle_blocked) text += '  |  ⚠ 前方障碍物,紧急停止';
+        navStatus.textContent = text;
+        navStatus.classList.toggle('obstacle', !!data.obstacle_blocked);
+      } catch (e) { /* keep last known text on a transient fetch failure */ }
+    }
+    pollNavStatus();
+    setInterval(pollNavStatus, 500);
   </script>
 </body>
 </html>
@@ -370,8 +397,23 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/stream":
             self._serve_stream()
+        elif self.path == "/nav_status":
+            self._serve_nav_status()
         else:
             self._serve_index()
+
+    def _serve_nav_status(self) -> None:
+        node = _MjpegHandler.node
+        payload = {
+            "status": node._nav_status if node else "未知",
+            "obstacle_blocked": node._obstacle_blocked if node else False,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_index(self) -> None:
         body = _INDEX_HTML.encode("utf-8")
@@ -439,6 +481,8 @@ class DashboardNode(Node):
         self._ultrasonic_stamp = 0.0
         self._goal_pose: tuple[float, float, float] | None = None
         self._nav_goal_handle = None
+        self._nav_status = "未开始"
+        self._obstacle_blocked = False
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -452,6 +496,9 @@ class DashboardNode(Node):
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )
         self.create_subscription(Path, "/plan", self._on_plan, 10)
+        self.create_subscription(
+            Bool, "/rover/obstacle_blocked", self._on_obstacle_blocked, _MODE_QOS
+        )
 
         self._mode_pub = self.create_publisher(String, "/rover/mode", _CMD_QOS)
         self._teleop_pub = self.create_publisher(Twist, "/rover/cmd_vel_teleop", _CMD_QOS)
@@ -477,6 +524,9 @@ class DashboardNode(Node):
     def _on_range(self, msg: Range) -> None:
         self._ultrasonic_range = float(msg.range)
         self._ultrasonic_stamp = time.monotonic()
+
+    def _on_obstacle_blocked(self, msg: Bool) -> None:
+        self._obstacle_blocked = msg.data
 
     def reset_map(self) -> None:
         """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
@@ -514,7 +564,9 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("compute_path_to_pose goal rejected")
+            self._nav_status = "路线规划失败"
             return
+        self._nav_status = "已规划,等待移动"
         # No further action needed — planner_server publishes the resulting
         # path to /plan itself, which _on_plan/_render already pick up.
         goal_handle.get_result_async()
@@ -535,14 +587,18 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("navigate_to_pose goal rejected")
+            self._nav_status = "导航被拒绝"
             return
         self._nav_goal_handle = goal_handle
+        self._nav_status = "导航中"
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_navigate_result)
 
     def _on_navigate_result(self, future) -> None:
         self._nav_goal_handle = None
-        self.get_logger().info(f"navigate_to_pose finished: status={future.result().status}")
+        status = future.result().status
+        self.get_logger().info(f"navigate_to_pose finished: status={status}")
+        self._nav_status = _GOAL_STATUS_TEXT.get(status, f"未知状态({status})")
         # Without wheel odometry, slam_toolbox occasionally mismatches a scan
         # and permanently bakes a cluster of phantom points into the map —
         # errors only accumulate over a run, never self-correct. Wiping the
@@ -554,6 +610,7 @@ class DashboardNode(Node):
         """Cancel any in-flight navigation and clear the local goal/path state."""
         self._goal_pose = None
         self._nav_path = None
+        self._nav_status = "未开始"
         if self._nav_goal_handle is not None:
             self._nav_goal_handle.cancel_goal_async()
             self._nav_goal_handle = None
