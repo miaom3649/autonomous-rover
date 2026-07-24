@@ -50,7 +50,9 @@ controller_server:
 
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.1   # 10 cm
+      xy_goal_tolerance: 0.15  # 15 cm — was 10cm, too tight: small heading
+      # error was enough to graze past the goal instead of registering it as
+      # reached, letting the goal drift behind the robot (see allow_reversing).
       yaw_goal_tolerance: 0.2  # ~11 degrees
       stateful: true
 
@@ -73,7 +75,15 @@ controller_server:
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.08
       use_rotate_to_heading: false      # Ackermann — cannot rotate in place
-      allow_reversing: false
+      # If the robot overshoots and the goal ends up behind it, pure pursuit's
+      # aim-at-a-nearby-path-point logic has no way to "turn around" without
+      # rotating in place or reversing — with both those normally off, it was
+      # left driving straight, away from the goal, forever. Reversing lets it
+      # back toward a behind-it goal instead. Backing up mostly retraces
+      # ground the lidar scanned seconds ago driving forward through it, so
+      # this isn't as blind as reversing usually is — the main residual risk
+      # is something moving into that space in the few seconds since.
+      allow_reversing: true
       rotate_to_heading_min_angle: 0.785
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
