@@ -80,12 +80,18 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
             ),
             # ── slam_toolbox (mapping mode, pure scan-matching — no wheel odometry) ──
+            # respawn=True: slam_toolbox has no "clear map" service, so dashboard_node's
+            # reset-map button resets by killing this process outright — launch then
+            # restarts it fresh (map_file_name is "" in slam_toolbox_params.yaml, so a
+            # fresh process always starts from a blank map).
             Node(
                 package="slam_toolbox",
                 executable="async_slam_toolbox_node",
                 name="slam_toolbox",
                 parameters=[slam_toolbox_params],
                 output="screen",
+                respawn=True,
+                respawn_delay=1.0,
             ),
             # ── TF: base_link -> laser_frame, static (measure once mounted) ──
             Node(

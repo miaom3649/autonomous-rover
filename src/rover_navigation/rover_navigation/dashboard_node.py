@@ -12,12 +12,19 @@ http://raspberrypi.local:8082 in a browser. Shows a 1x2 grid:
   - The robot's estimated position, looked up from the map->base_link TF
     (map->odom comes from slam_toolbox's scan matching; odom->base_link is
     a static identity — this rover has no wheel encoders)
+
+The page also has a "reset map" button. slam_toolbox has no built-in
+"clear the map and start over" service, so the reset works by killing the
+async_slam_toolbox_node process outright — nav.launch.py runs it with
+respawn=True, so launch immediately restarts it with a fresh, blank map.
 """
 
 import math
+import subprocess
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -40,6 +47,33 @@ STALE_AFTER_S = 2.0
 PANEL_H = 480
 PANEL_W = 640
 SCAN_DISPLAY_RADIUS_M = 4.0
+_INDEX_HTML = """<!doctype html>
+<html>
+<head><title>Rover Dashboard</title></head>
+<body style="margin:0;background:#111;color:#eee;font-family:sans-serif">
+  <div style="padding:8px">
+    <button id="resetBtn" style="font-size:16px;padding:6px 14px">Reset map</button>
+    <span id="status"></span>
+  </div>
+  <img src="/stream" style="width:100%;display:block">
+  <script>
+    document.getElementById('resetBtn').onclick = async () => {
+      const btn = document.getElementById('resetBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      status.textContent = ' resetting...';
+      try {
+        const resp = await fetch('/reset', {method: 'POST'});
+        status.textContent = resp.ok ? ' done' : ' failed';
+      } catch (e) {
+        status.textContent = ' failed';
+      }
+      setTimeout(() => { btn.disabled = false; status.textContent = ''; }, 3000);
+    };
+  </script>
+</body>
+</html>
+"""
 # Matches mode_controller_node's publisher QoS — TRANSIENT_LOCAL so this
 # (deliberately late-starting) node still gets the last published mode
 # immediately on subscribing, instead of only future mode changes.
@@ -154,11 +188,26 @@ def _render_occupancy_panel(
 class _MjpegHandler(BaseHTTPRequestHandler):
     latest_jpeg: bytes | None = None
     lock = threading.Lock()
+    reset_callback: Optional[Callable[[], None]] = None
 
     def log_message(self, *args) -> None:
         pass
 
     def do_GET(self) -> None:
+        if self.path == "/stream":
+            self._serve_stream()
+        else:
+            self._serve_index()
+
+    def _serve_index(self) -> None:
+        body = _INDEX_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_stream(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
@@ -173,6 +222,19 @@ class _MjpegHandler(BaseHTTPRequestHandler):
                 time.sleep(0.05)
         except Exception:
             pass
+
+    def do_POST(self) -> None:
+        if self.path == "/reset" and _MjpegHandler.reset_callback is not None:
+            _MjpegHandler.reset_callback()
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
 
 
 class DashboardNode(Node):
@@ -213,6 +275,12 @@ class DashboardNode(Node):
     def _on_range(self, msg: Range) -> None:
         self._ultrasonic_range = float(msg.range)
         self._ultrasonic_stamp = time.monotonic()
+
+    def reset_map(self) -> None:
+        """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
+        self.get_logger().warn("Reset map requested — restarting slam_toolbox")
+        self._occupancy_grid = None
+        subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
 
     def _lookup_pose(self) -> tuple[float, float, float] | None:
         """Return (x, y, yaw_deg) from the map->base_link TF, or None if unavailable."""
@@ -278,8 +346,9 @@ class DashboardNode(Node):
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
     node = DashboardNode()
+    _MjpegHandler.reset_callback = node.reset_map
 
-    server = HTTPServer(("0.0.0.0", PORT), _MjpegHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), _MjpegHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     try:
