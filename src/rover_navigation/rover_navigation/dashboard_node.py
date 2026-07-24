@@ -300,12 +300,13 @@ def _render_occupancy_panel(
         row = (pose[1] - grid.info.origin.position.y) / res
         px, py = int(col), int(row)
         if 0 <= px < gw and 0 <= py < gh:
-            # Arrow instead of a plain "+": this is a top-down world-frame map
-            # (unlike the ego-centric scan panel), so heading isn't always
-            # "up" or "right" — draw it explicitly instead of leaving it to
-            # be guessed. Drawn in raw (unflipped) grid space, same as the
-            # position itself, so it comes out correct after the single flip
-            # below. Drawn *after* the path (not before) so it's never
+            # Dot + a short heading tick off its edge (power-button-icon
+            # style) rather than a plain "+": this is a top-down world-frame
+            # map (unlike the ego-centric scan panel), so heading isn't
+            # always "up" or "right" — draw it explicitly instead of leaving
+            # it to be guessed. Drawn in raw (unflipped) grid space, same as
+            # the position itself, so it comes out correct after the single
+            # flip below. Drawn *after* the path (not before) so it's never
             # covered by it.
             #
             # Sized in *display* pixels (via the grid->panel scale factor),
@@ -314,15 +315,17 @@ def _render_occupancy_panel(
             # (e.g. right after a map reset), to the point of visually
             # swallowing the path's actual starting point.
             scale = w / gw
-            arrow_len = max(26.0 / scale, 3.0)
             circle_r = max(round(4.0 / scale), 1)
+            tick_len = max(round(3.0 / scale), 1)
             yaw_rad = math.radians(pose[2])
-            tip = (
-                int(px + arrow_len * math.cos(yaw_rad)),
-                int(py + arrow_len * math.sin(yaw_rad)),
+            dx, dy = math.cos(yaw_rad), math.sin(yaw_rad)
+            tick_start = (int(px + circle_r * dx), int(py + circle_r * dy))
+            tick_end = (
+                int(px + (circle_r + tick_len) * dx),
+                int(py + (circle_r + tick_len) * dy),
             )
             cv2.circle(img, (px, py), circle_r, (0, 0, 255), -1)
-            cv2.arrowedLine(img, (px, py), tip, (0, 0, 255), 3, tipLength=0.5)
+            cv2.line(img, tick_start, tick_end, (0, 0, 255), 2)
 
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
     img = cv2.flip(img, 0)
