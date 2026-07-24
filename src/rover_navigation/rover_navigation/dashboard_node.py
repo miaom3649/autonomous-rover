@@ -284,7 +284,20 @@ def _render_occupancy_panel(
         row = (pose[1] - grid.info.origin.position.y) / res
         px, py = int(col), int(row)
         if 0 <= px < gw and 0 <= py < gh:
-            cv2.drawMarker(img, (px, py), (0, 0, 255), cv2.MARKER_CROSS, max(gw // 40, 4), 2)
+            # Arrow instead of a plain "+": this is a top-down world-frame map
+            # (unlike the ego-centric scan panel), so heading isn't always
+            # "up" or "right" — draw it explicitly instead of leaving it to
+            # be guessed. Drawn in raw (unflipped) grid space, same as the
+            # position itself, so it comes out correct after the single flip
+            # below.
+            yaw_rad = math.radians(pose[2])
+            arrow_len = max(gw // 15, 10)
+            tip = (
+                int(px + arrow_len * math.cos(yaw_rad)),
+                int(py + arrow_len * math.sin(yaw_rad)),
+            )
+            cv2.circle(img, (px, py), max(gw // 70, 3), (0, 0, 255), -1)
+            cv2.arrowedLine(img, (px, py), tip, (0, 0, 255), 2, tipLength=0.4)
 
     if path is not None and len(path.poses) >= 2:
         res = grid.info.resolution
