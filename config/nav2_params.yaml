@@ -53,7 +53,14 @@ controller_server:
       xy_goal_tolerance: 0.15  # 15 cm — was 10cm, too tight: small heading
       # error was enough to graze past the goal instead of registering it as
       # reached, letting the goal drift behind the robot (see allow_reversing).
-      yaw_goal_tolerance: 0.2  # ~11 degrees
+      # Yaw check effectively disabled: this is Ackermann steering with a
+      # 0.2m min turning radius, larger than the 0.15m xy tolerance above —
+      # fine-tuning heading at the goal requires a turn wide enough to drive
+      # back out of the xy tolerance, which then requires re-approaching,
+      # which breaks yaw again, forever (the endless spin-in-place-ish
+      # wiggling seen at goals). Position-only arrival is what's achievable.
+      # 3.15 rad > pi, the max possible heading error, so this always passes.
+      yaw_goal_tolerance: 3.15
       stateful: true
 
     FollowPath:
