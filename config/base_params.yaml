@@ -1,7 +1,7 @@
 drive_node:
   ros__parameters:
     max_linear_vel: 0.5
-    max_angular_vel: 2.0
+    wheelbase_m: 0.10  # PLACEHOLDER — measure the real front/rear axle distance
     max_motor_speed: 50
     max_steering_angle: 30.0
     cmd_timeout: 0.5
