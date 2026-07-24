@@ -24,7 +24,7 @@ import numpy as np
 import rclpy
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, Range
 from std_msgs.msg import String
 from tf2_ros import (
@@ -39,6 +39,15 @@ PORT = 8082
 STALE_AFTER_S = 2.0
 PANEL_H = 480
 PANEL_W = 640
+SCAN_DISPLAY_RADIUS_M = 4.0
+# Matches mode_controller_node's publisher QoS — TRANSIENT_LOCAL so this
+# (deliberately late-starting) node still gets the last published mode
+# immediately on subscribing, instead of only future mode changes.
+_MODE_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 
@@ -69,7 +78,7 @@ def _render_scan_panel(scan: LaserScan | None, h: int, w: int) -> np.ndarray:
     valid = np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= scan.range_max)
     ranges, angles = ranges[valid], angles[valid]
 
-    display_radius_m = min(float(scan.range_max), 8.0)
+    display_radius_m = min(float(scan.range_max), SCAN_DISPLAY_RADIUS_M)
     margin = 20
     scale = (min(h, w) / 2 - margin) / display_radius_m
     cx, cy = w // 2, h // 2
@@ -183,7 +192,7 @@ class DashboardNode(Node):
         self.create_subscription(
             OccupancyGrid, "/map", self._on_occupancy_grid, qos_profile_sensor_data
         )
-        self.create_subscription(String, "/rover/current_mode", self._on_mode, 10)
+        self.create_subscription(String, "/rover/current_mode", self._on_mode, _MODE_QOS)
         self.create_subscription(
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )

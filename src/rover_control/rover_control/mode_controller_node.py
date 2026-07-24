@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, String
 
@@ -10,6 +10,16 @@ _MANUAL = "MANUAL"
 _AUTO = "AUTO"
 
 _RELIABLE = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+# current_mode is a "current state" topic, not an event stream — a late
+# subscriber (e.g. dashboard_node, deliberately started a few seconds after
+# everything else) should still see the last published mode immediately,
+# not wait for the next actual mode change. TRANSIENT_LOCAL gives new
+# subscribers a replay of the last message instead of only future ones.
+_MODE_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class ModeControllerNode(Node):
@@ -33,7 +43,7 @@ class ModeControllerNode(Node):
         self._estopped: bool = False
 
         self._pub_cmd = self.create_publisher(Twist, "/rover/cmd_vel", _RELIABLE)
-        self._pub_mode = self.create_publisher(String, "/rover/current_mode", _RELIABLE)
+        self._pub_mode = self.create_publisher(String, "/rover/current_mode", _MODE_QOS)
 
         self.create_subscription(String, "/rover/mode", self._on_mode, _RELIABLE)
         self.create_subscription(Bool, "/rover/estop", self._on_estop, _RELIABLE)
