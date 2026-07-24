@@ -305,17 +305,23 @@ def _render_occupancy_panel(
             # "up" or "right" — draw it explicitly instead of leaving it to
             # be guessed. Drawn in raw (unflipped) grid space, same as the
             # position itself, so it comes out correct after the single flip
-            # below. Drawn *after* the path (not before) and with a thick,
-            # long shaft so it reads clearly instead of blurring into a
-            # blob — small maps and JPEG compression made the first version
-            # of this arrow illegible.
+            # below. Drawn *after* the path (not before) so it's never
+            # covered by it.
+            #
+            # Sized in *display* pixels (via the grid->panel scale factor),
+            # not raw grid cells — a fixed cell count is tiny on a big
+            # explored map and comically oversized on a small fresh one
+            # (e.g. right after a map reset), to the point of visually
+            # swallowing the path's actual starting point.
+            scale = w / gw
+            arrow_len = max(26.0 / scale, 3.0)
+            circle_r = max(round(4.0 / scale), 1)
             yaw_rad = math.radians(pose[2])
-            arrow_len = max(gw // 6, 16)
             tip = (
                 int(px + arrow_len * math.cos(yaw_rad)),
                 int(py + arrow_len * math.sin(yaw_rad)),
             )
-            cv2.circle(img, (px, py), max(gw // 150, 2), (0, 0, 255), -1)
+            cv2.circle(img, (px, py), circle_r, (0, 0, 255), -1)
             cv2.arrowedLine(img, (px, py), tip, (0, 0, 255), 3, tipLength=0.5)
 
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
