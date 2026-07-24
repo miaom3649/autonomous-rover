@@ -278,29 +278,40 @@ def _render_occupancy_panel(
     gray = np.where(cells < 0, 127, 255 - (np.clip(cells, 0, 100) * 255 // 100)).astype(np.uint8)
     img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    if path is not None and len(path.poses) >= 2:
-        res = grid.info.resolution
-        pts = [
-            (
-                int((p.pose.position.x - grid.info.origin.position.x) / res),
-                int((p.pose.position.y - grid.info.origin.position.y) / res),
-            )
-            for p in path.poses
-        ]
-        cv2.polylines(
-            img, [np.array(pts, dtype=np.int32)], isClosed=False, color=(255, 0, 255), thickness=1
-        )
-        gx, gy = pts[-1]
-        if 0 <= gx < gw and 0 <= gy < gh:
-            cv2.drawMarker(img, (gx, gy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, max(gw // 30, 6), 2)
-
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
     img = cv2.flip(img, 0)
     if (gh, gw) != (h, w):
         img = cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST)
 
+    res = grid.info.resolution
+
+    def to_display(x: float, y: float) -> tuple[float, float]:
+        """World (map frame) -> display pixel coords, matching the flip+resize above.
+
+        Overlays (path, goal marker, pose) are all drawn *after* the flip and
+        resize, directly in display-pixel space with float precision kept
+        until the final round() — computing them earlier in raw grid-cell
+        units meant their size/thickness came from a fixed cell count, which
+        is tiny on a big explored map and comically (and imprecisely, for
+        the heading tick) oversized on a small fresh one, e.g. right after a
+        map reset.
+        """
+        col = (x - grid.info.origin.position.x) / res
+        row = (y - grid.info.origin.position.y) / res
+        return col * (w / gw), (gh - 1 - row) * (h / gh)
+
+    if path is not None and len(path.poses) >= 2:
+        pts = np.array(
+            [
+                [round(v) for v in to_display(p.pose.position.x, p.pose.position.y)]
+                for p in path.poses
+            ],
+            dtype=np.int32,
+        )
+        cv2.polylines(img, [pts], isClosed=False, color=(255, 0, 255), thickness=2)
+        cv2.drawMarker(img, tuple(pts[-1]), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 14, 2)
+
     if pose is not None:
-        res = grid.info.resolution
         col = (pose[0] - grid.info.origin.position.x) / res
         row = (pose[1] - grid.info.origin.position.y) / res
         if 0 <= col < gw and 0 <= row < gh:
@@ -309,15 +320,7 @@ def _render_occupancy_panel(
             # map (unlike the ego-centric scan panel), so heading isn't
             # always "up" or "right" — draw it explicitly instead of leaving
             # it to be guessed.
-            #
-            # Computed here in *display* pixel space (after the flip and
-            # resize above), with float precision kept until the final
-            # int() — doing this earlier in raw grid-cell units rounded a
-            # tick only ~1 cell long down to a single blocky, often
-            # misleading integer step on small/coarse maps (e.g. right
-            # after a map reset), destroying the angle it was meant to show.
-            dcol = col * (w / gw)
-            drow = (gh - 1 - row) * (h / gh)  # cv2.flip(img,0): new_row = gh-1-old_row
+            dcol, drow = to_display(pose[0], pose[1])
             circle_r = 5.0
             tick_len = 20.0
             yaw_rad = math.radians(pose[2])
