@@ -278,27 +278,6 @@ def _render_occupancy_panel(
     gray = np.where(cells < 0, 127, 255 - (np.clip(cells, 0, 100) * 255 // 100)).astype(np.uint8)
     img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    if pose is not None:
-        res = grid.info.resolution
-        col = (pose[0] - grid.info.origin.position.x) / res
-        row = (pose[1] - grid.info.origin.position.y) / res
-        px, py = int(col), int(row)
-        if 0 <= px < gw and 0 <= py < gh:
-            # Arrow instead of a plain "+": this is a top-down world-frame map
-            # (unlike the ego-centric scan panel), so heading isn't always
-            # "up" or "right" — draw it explicitly instead of leaving it to
-            # be guessed. Drawn in raw (unflipped) grid space, same as the
-            # position itself, so it comes out correct after the single flip
-            # below.
-            yaw_rad = math.radians(pose[2])
-            arrow_len = max(gw // 15, 10)
-            tip = (
-                int(px + arrow_len * math.cos(yaw_rad)),
-                int(py + arrow_len * math.sin(yaw_rad)),
-            )
-            cv2.circle(img, (px, py), max(gw // 70, 3), (0, 0, 255), -1)
-            cv2.arrowedLine(img, (px, py), tip, (0, 0, 255), 2, tipLength=0.4)
-
     if path is not None and len(path.poses) >= 2:
         res = grid.info.resolution
         pts = [
@@ -314,6 +293,30 @@ def _render_occupancy_panel(
         gx, gy = pts[-1]
         if 0 <= gx < gw and 0 <= gy < gh:
             cv2.drawMarker(img, (gx, gy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, max(gw // 30, 6), 2)
+
+    if pose is not None:
+        res = grid.info.resolution
+        col = (pose[0] - grid.info.origin.position.x) / res
+        row = (pose[1] - grid.info.origin.position.y) / res
+        px, py = int(col), int(row)
+        if 0 <= px < gw and 0 <= py < gh:
+            # Arrow instead of a plain "+": this is a top-down world-frame map
+            # (unlike the ego-centric scan panel), so heading isn't always
+            # "up" or "right" — draw it explicitly instead of leaving it to
+            # be guessed. Drawn in raw (unflipped) grid space, same as the
+            # position itself, so it comes out correct after the single flip
+            # below. Drawn *after* the path (not before) and with a thick,
+            # long shaft so it reads clearly instead of blurring into a
+            # blob — small maps and JPEG compression made the first version
+            # of this arrow illegible.
+            yaw_rad = math.radians(pose[2])
+            arrow_len = max(gw // 6, 16)
+            tip = (
+                int(px + arrow_len * math.cos(yaw_rad)),
+                int(py + arrow_len * math.sin(yaw_rad)),
+            )
+            cv2.circle(img, (px, py), max(gw // 150, 2), (0, 0, 255), -1)
+            cv2.arrowedLine(img, (px, py), tip, (0, 0, 255), 3, tipLength=0.5)
 
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
     img = cv2.flip(img, 0)
