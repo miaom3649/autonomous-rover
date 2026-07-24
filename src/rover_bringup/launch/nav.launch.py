@@ -123,6 +123,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="rover_control",
                 executable="mode_controller_node",
                 name="mode_controller_node",
+                parameters=[base_params],
             ),
             # ── Live debug dashboard (lidar/mode/ultrasonic/position on :8082) ──
             TimerAction(
