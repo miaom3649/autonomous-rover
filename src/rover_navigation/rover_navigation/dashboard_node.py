@@ -6,7 +6,9 @@ serves a combined view as MJPEG over HTTP for debugging — open
 http://raspberrypi.local:8082 in a browser. Shows a 1x2 grid:
   - Left: a live top-down scatter of the lidar's current /scan
   - Right: slam_toolbox's accumulated /map occupancy grid, with the robot's
-    current position (from the map->base_link TF) marked on it
+    current position (from the map->base_link TF) marked on it, plus Nav2's
+    current global plan (/plan) drawn as a line with its endpoint (the goal)
+    marked, while a navigation goal is active
   - Current MANUAL/AUTO mode
   - Ultrasonic reading
   - The robot's estimated position, looked up from the map->base_link TF
@@ -29,7 +31,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 import rclpy
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, Range
@@ -138,9 +140,18 @@ def _render_scan_panel(scan: LaserScan | None, h: int, w: int) -> np.ndarray:
 
 
 def _render_occupancy_panel(
-    grid: OccupancyGrid | None, pose: tuple[float, float, float] | None, h: int, w: int
+    grid: OccupancyGrid | None,
+    pose: tuple[float, float, float] | None,
+    path: Path | None,
+    h: int,
+    w: int,
 ) -> np.ndarray:
-    """Render slam_toolbox's accumulated /map (nav_msgs/OccupancyGrid), top-down."""
+    """Render slam_toolbox's accumulated /map (nav_msgs/OccupancyGrid), top-down.
+
+    Also overlays Nav2's current global plan (/plan) as a line, with its final
+    waypoint marked as the goal — /plan has no dedicated "current goal" topic,
+    but the planner always ends its path at (or near) the requested goal.
+    """
     if grid is None or grid.info.width == 0 or grid.info.height == 0:
         panel = np.zeros((h, w, 3), dtype=np.uint8)
         cv2.putText(
@@ -167,6 +178,22 @@ def _render_occupancy_panel(
         px, py = int(col), int(row)
         if 0 <= px < gw and 0 <= py < gh:
             cv2.drawMarker(img, (px, py), (0, 0, 255), cv2.MARKER_CROSS, max(gw // 40, 4), 2)
+
+    if path is not None and len(path.poses) >= 2:
+        res = grid.info.resolution
+        pts = [
+            (
+                int((p.pose.position.x - grid.info.origin.position.x) / res),
+                int((p.pose.position.y - grid.info.origin.position.y) / res),
+            )
+            for p in path.poses
+        ]
+        cv2.polylines(
+            img, [np.array(pts, dtype=np.int32)], isClosed=False, color=(255, 0, 255), thickness=1
+        )
+        gx, gy = pts[-1]
+        if 0 <= gx < gw and 0 <= gy < gh:
+            cv2.drawMarker(img, (gx, gy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, max(gw // 30, 6), 2)
 
     # Grid row 0 is the origin (bottom in world coords) — flip once so +y (north) is up.
     img = cv2.flip(img, 0)
@@ -243,6 +270,7 @@ class DashboardNode(Node):
 
         self._scan: LaserScan | None = None
         self._occupancy_grid: OccupancyGrid | None = None
+        self._nav_path: Path | None = None
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
         self._ultrasonic_stamp = 0.0
@@ -258,6 +286,7 @@ class DashboardNode(Node):
         self.create_subscription(
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )
+        self.create_subscription(Path, "/plan", self._on_plan, 10)
 
         self.create_timer(0.1, self._render)
         self.create_timer(2.0, self._log_pose)
@@ -271,6 +300,9 @@ class DashboardNode(Node):
 
     def _on_mode(self, msg: String) -> None:
         self._mode = msg.data
+
+    def _on_plan(self, msg: Path) -> None:
+        self._nav_path = msg
 
     def _on_range(self, msg: Range) -> None:
         self._ultrasonic_range = float(msg.range)
@@ -308,7 +340,9 @@ class DashboardNode(Node):
         pose = self._lookup_pose()
 
         scan_panel = _render_scan_panel(self._scan, PANEL_H, PANEL_W)
-        occupancy_panel = _render_occupancy_panel(self._occupancy_grid, pose, PANEL_H, PANEL_W)
+        occupancy_panel = _render_occupancy_panel(
+            self._occupancy_grid, pose, self._nav_path, PANEL_H, PANEL_W
+        )
         combined = np.hstack([scan_panel, occupancy_panel])
 
         now = time.monotonic()
