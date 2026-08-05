@@ -289,7 +289,7 @@ def _render_occupancy_panel(
     grid: OccupancyGrid | None,
     pose: tuple[float, float, float] | None,
     path: Path | None,
-    obstacle_marks: list[tuple[float, float, str]],
+    obstacle_marks: list[tuple[float, float, str, float | None]],
     h: int,
     w: int,
 ) -> np.ndarray:
@@ -351,7 +351,7 @@ def _render_occupancy_panel(
         cv2.polylines(img, [pts], isClosed=False, color=(255, 0, 255), thickness=2)
         cv2.drawMarker(img, tuple(pts[-1]), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 14, 2)
 
-    for x, y, label in obstacle_marks:
+    for x, y, label, _ in obstacle_marks:
         col = (x - grid.info.origin.position.x) / res
         row = (y - grid.info.origin.position.y) / res
         if 0 <= col < gw and 0 <= row < gh:
@@ -526,7 +526,7 @@ class DashboardNode(Node):
         self._nav_status = "未开始"
         self._obstacle_blocked = False
         self._camera_image: np.ndarray | None = None
-        self._obstacle_marks: list[tuple[float, float, str]] = []
+        self._obstacle_marks: list[tuple[float, float, str, float | None]] = []
         self._detections: list[dict] = []
 
         self.declare_parameter("camera_fx", 0.0)
@@ -542,6 +542,10 @@ class DashboardNode(Node):
         self.declare_parameter("camera_y_m", 0.0)
         self.declare_parameter("camera_pitch_down_deg", 0.0)
         self.declare_parameter("camera_yaw_left_deg", 0.0)
+        self.declare_parameter("automatic_marker_ttl_s", 3.0)
+        self._automatic_marker_ttl = float(
+            self.get_parameter("automatic_marker_ttl_s").value
+        )
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -693,23 +697,26 @@ class DashboardNode(Node):
             merge_index = next(
                 (
                     index
-                    for index, (old_x, old_y, old_label) in enumerate(self._obstacle_marks)
+                    for index, (old_x, old_y, old_label, _) in enumerate(
+                        self._obstacle_marks
+                    )
                     if old_label.startswith(merge_label + " ")
                     and math.hypot(map_x - old_x, map_y - old_y) < 0.25
                 ),
                 None,
             )
             if merge_index is not None:
-                old_x, old_y, _ = self._obstacle_marks[merge_index]
+                old_x, old_y, _, _ = self._obstacle_marks[merge_index]
                 self._obstacle_marks[merge_index] = (
                     0.7 * old_x + 0.3 * map_x,
                     0.7 * old_y + 0.3 * map_y,
                     label,
+                    time.monotonic(),
                 )
             else:
-                self._obstacle_marks.append((map_x, map_y, label))
+                self._obstacle_marks.append((map_x, map_y, label, time.monotonic()))
         else:
-            self._obstacle_marks.append((map_x, map_y, label))
+            self._obstacle_marks.append((map_x, map_y, label, None))
         self.get_logger().info(
             f"Obstacle: base=({point[0]:.2f}, {point[1]:.2f})m, "
             f"map=({map_x:.2f}, {map_y:.2f})m"
@@ -845,6 +852,12 @@ class DashboardNode(Node):
         )
 
     def _render(self) -> None:
+        marker_cutoff = time.monotonic() - self._automatic_marker_ttl
+        self._obstacle_marks = [
+            marker
+            for marker in self._obstacle_marks
+            if marker[3] is None or marker[3] >= marker_cutoff
+        ]
         pose = self._lookup_pose()
 
         scan_panel = _render_scan_panel(self._scan, PANEL_H, PANEL_W)
