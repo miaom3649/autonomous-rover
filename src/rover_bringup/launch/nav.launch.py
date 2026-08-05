@@ -99,6 +99,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="rf2o_laser_odometry_node",
                 name="rf2o_laser_odometry",
                 parameters=[rf2o_params],
+                arguments=["--ros-args", "--log-level", "error"],
                 output="screen",
             ),
             # ── slam_toolbox (mapping mode, pure scan-matching — no wheel odometry) ──
