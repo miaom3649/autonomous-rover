@@ -488,8 +488,17 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             return
         try:
             route(node, body)
+        except ValueError as exc:
+            node.get_logger().warn(f"Rejected dashboard request {self.path}: {exc}")
+            resp_body = str(exc).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.end_headers()
+            self.wfile.write(resp_body)
+            return
         except Exception:
-            node.get_logger().exception(f"dashboard POST {self.path} failed")
+            node.get_logger().error(f"dashboard POST {self.path} failed unexpectedly")
             self.send_response(500)
             self.end_headers()
             return
