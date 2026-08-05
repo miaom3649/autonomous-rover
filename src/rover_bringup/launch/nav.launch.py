@@ -65,8 +65,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "lidar_yaw",
-                default_value="0.0",
-                description="Lidar yaw offset from base_link, radians — PLACEHOLDER.",
+                default_value="0.130900",
+                description="Lidar yaw offset from base_link, radians (calibrated +7.5 deg).",
             ),
             # ── Hardware nodes ──
             Node(
