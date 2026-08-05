@@ -30,6 +30,10 @@ class ObjectDetectorNode(Node):
         self._period = 1.0 / float(self.get_parameter("rate_hz").value)
         self._timeout = float(self.get_parameter("timeout_s").value)
         self._ground_labels = set(self.get_parameter("ground_labels").value)
+        self._session = requests.Session()
+        # The Pi may use an internet proxy, but the detector is a direct LAN
+        # service. Never route camera frames through that proxy.
+        self._session.trust_env = False
         self._last_request = 0.0
         self._busy = False
         self._lock = threading.Lock()
@@ -69,7 +73,7 @@ class ObjectDetectorNode(Node):
             ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
                 raise RuntimeError("JPEG encoding failed")
-            response = requests.post(
+            response = self._session.post(
                 self._url,
                 data=encoded.tobytes(),
                 headers={"Content-Type": "image/jpeg"},
