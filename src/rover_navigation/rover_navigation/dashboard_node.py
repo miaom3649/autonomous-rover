@@ -57,7 +57,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan, Range
+from sensor_msgs.msg import Image, LaserScan, Range
 from std_msgs.msg import Bool, String
 from tf2_ros import (
     Buffer,
@@ -66,6 +66,8 @@ from tf2_ros import (
     LookupException,
     TransformListener,
 )
+
+from rover_navigation.ground_projection import pixel_to_ground
 
 PORT = 8082
 STALE_AFTER_S = 2.0
@@ -105,6 +107,8 @@ _INDEX_HTML = """<!doctype html>
   </div>
   <div id="hint">Click the map panel (right half) to set a goal</div>
   <img id="stream" src="/stream" style="width:100%;display:block">
+  <div id="hint">Click where an obstacle touches the ground to mark it on the map</div>
+  <img id="camera" src="/camera_stream" style="width:min(100%,640px);display:block;margin:auto">
   <div id="dpad">
     <div></div><button class="drive" data-dir="up">&#9650;</button><div></div>
     <button class="drive" data-dir="left">&#9664;</button><div></div>
@@ -155,6 +159,14 @@ _INDEX_HTML = """<!doctype html>
       }
       const ok = await post('/goal/set', {fx: (fx - 0.5) * 2, fy: fy});
       flash(ok ? 'goal set' : 'failed');
+    });
+
+    document.getElementById('camera').addEventListener('click', async (e) => {
+      const rect = e.target.getBoundingClientRect();
+      const u = (e.clientX - rect.left) / rect.width;
+      const v = (e.clientY - rect.top) / rect.height;
+      const ok = await post('/obstacle/mark', {u_fraction: u, v_fraction: v});
+      flash(ok ? 'obstacle marked' : 'projection failed; check calibration');
     });
 
     // Press-and-hold d-pad: repeat the drive command while held (under
@@ -277,6 +289,7 @@ def _render_occupancy_panel(
     grid: OccupancyGrid | None,
     pose: tuple[float, float, float] | None,
     path: Path | None,
+    obstacle_marks: list[tuple[float, float]],
     h: int,
     w: int,
 ) -> np.ndarray:
@@ -338,6 +351,17 @@ def _render_occupancy_panel(
         cv2.polylines(img, [pts], isClosed=False, color=(255, 0, 255), thickness=2)
         cv2.drawMarker(img, tuple(pts[-1]), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 14, 2)
 
+    for x, y in obstacle_marks:
+        col = (x - grid.info.origin.position.x) / res
+        row = (y - grid.info.origin.position.y) / res
+        if 0 <= col < gw and 0 <= row < gh:
+            marker = tuple(round(value) for value in to_display(x, y))
+            cv2.drawMarker(img, marker, (0, 165, 255), cv2.MARKER_DIAMOND, 14, 2)
+            cv2.putText(
+                img, "obstacle", (marker[0] + 8, marker[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 100, 255), 1, cv2.LINE_AA,
+            )
+
     if pose is not None:
         col = (pose[0] - grid.info.origin.position.x) / res
         row = (pose[1] - grid.info.origin.position.y) / res
@@ -375,6 +399,7 @@ def _render_occupancy_panel(
 
 class _MjpegHandler(BaseHTTPRequestHandler):
     latest_jpeg: bytes | None = None
+    latest_camera_jpeg: bytes | None = None
     lock = threading.Lock()
     node: "DashboardNode | None" = None
 
@@ -389,6 +414,9 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         "/goal/clear": lambda node, body: node.clear_goal(),
         "/mode/toggle": lambda node, body: node.toggle_mode(),
         "/drive": lambda node, body: node.drive(str(body.get("dir", "stop"))),
+        "/obstacle/mark": lambda node, body: node.mark_obstacle(
+            float(body.get("u_fraction", -1.0)), float(body.get("v_fraction", -1.0))
+        ),
     }
 
     def log_message(self, *args) -> None:
@@ -397,6 +425,8 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/stream":
             self._serve_stream()
+        elif self.path == "/camera_stream":
+            self._serve_stream(camera=True)
         elif self.path == "/nav_status":
             self._serve_nav_status()
         else:
@@ -423,14 +453,17 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_stream(self) -> None:
+    def _serve_stream(self, camera: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
         try:
             while True:
                 with _MjpegHandler.lock:
-                    data = _MjpegHandler.latest_jpeg
+                    data = (
+                        _MjpegHandler.latest_camera_jpeg
+                        if camera else _MjpegHandler.latest_jpeg
+                    )
                 if data:
                     self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
                     self.wfile.write(data)
@@ -483,11 +516,30 @@ class DashboardNode(Node):
         self._nav_goal_handle = None
         self._nav_status = "未开始"
         self._obstacle_blocked = False
+        self._camera_image: np.ndarray | None = None
+        self._obstacle_marks: list[tuple[float, float]] = []
+
+        self.declare_parameter("camera_fx", 0.0)
+        self.declare_parameter("camera_fy", 0.0)
+        self.declare_parameter("camera_cx", 0.0)
+        self.declare_parameter("camera_cy", 0.0)
+        self.declare_parameter("camera_k1", 0.0)
+        self.declare_parameter("camera_k2", 0.0)
+        self.declare_parameter("camera_p1", 0.0)
+        self.declare_parameter("camera_p2", 0.0)
+        self.declare_parameter("camera_height_m", 0.0)
+        self.declare_parameter("camera_x_m", 0.0)
+        self.declare_parameter("camera_y_m", 0.0)
+        self.declare_parameter("camera_pitch_down_deg", 0.0)
+        self.declare_parameter("camera_yaw_left_deg", 0.0)
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
+        self.create_subscription(
+            Image, "/rover/camera/image_raw", self._on_camera_image, qos_profile_sensor_data
+        )
         self.create_subscription(
             OccupancyGrid, "/map", self._on_occupancy_grid, qos_profile_sensor_data
         )
@@ -512,6 +564,19 @@ class DashboardNode(Node):
     def _on_scan(self, msg: LaserScan) -> None:
         self._scan = msg
 
+    def _on_camera_image(self, msg: Image) -> None:
+        if msg.encoding not in ("rgb8", "bgr8") or msg.step < msg.width * 3:
+            self.get_logger().warn(
+                f"Unsupported camera encoding/step: {msg.encoding}, step={msg.step}",
+                throttle_duration_sec=5.0,
+            )
+            return
+        rows = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.step)
+        frame = rows[:, : msg.width * 3].reshape(msg.height, msg.width, 3)
+        self._camera_image = (
+            cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if msg.encoding == "rgb8" else frame.copy()
+        )
+
     def _on_occupancy_grid(self, msg: OccupancyGrid) -> None:
         self._occupancy_grid = msg
 
@@ -532,7 +597,64 @@ class DashboardNode(Node):
         """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
         self.get_logger().warn("Reset map requested — restarting slam_toolbox")
         self._occupancy_grid = None
+        self._obstacle_marks.clear()
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
+
+    def mark_obstacle(self, u_fraction: float, v_fraction: float) -> None:
+        """Project a camera click to the ground and retain it in the current map."""
+        image = self._camera_image
+        pose = self._lookup_pose()
+        if image is None or pose is None or not (0.0 <= u_fraction <= 1.0) or not (
+            0.0 <= v_fraction <= 1.0
+        ):
+            raise ValueError("camera image, map pose, or click position unavailable")
+
+        values = {
+            name: float(self.get_parameter(name).value)
+            for name in (
+                "camera_fx", "camera_fy", "camera_cx", "camera_cy",
+                "camera_k1", "camera_k2", "camera_p1", "camera_p2", "camera_height_m",
+                "camera_x_m", "camera_y_m", "camera_pitch_down_deg", "camera_yaw_left_deg",
+            )
+        }
+        raw_pixel = np.array(
+            [[[u_fraction * (image.shape[1] - 1), v_fraction * (image.shape[0] - 1)]]],
+            dtype=np.float64,
+        )
+        camera_matrix = np.array(
+            [
+                [values["camera_fx"], 0.0, values["camera_cx"]],
+                [0.0, values["camera_fy"], values["camera_cy"]],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        distortion = np.array(
+            [values["camera_k1"], values["camera_k2"], values["camera_p1"], values["camera_p2"]]
+        )
+        undistorted = cv2.undistortPoints(
+            raw_pixel, camera_matrix, distortion, P=camera_matrix
+        )[0, 0]
+        point = pixel_to_ground(
+            float(undistorted[0]),
+            float(undistorted[1]),
+            fx=values["camera_fx"], fy=values["camera_fy"],
+            cx=values["camera_cx"], cy=values["camera_cy"],
+            camera_height_m=values["camera_height_m"],
+            camera_x_m=values["camera_x_m"], camera_y_m=values["camera_y_m"],
+            camera_pitch_down_deg=values["camera_pitch_down_deg"],
+            camera_yaw_left_deg=values["camera_yaw_left_deg"],
+        )
+        if point is None:
+            raise ValueError("clicked ray does not intersect the ground in front of camera")
+
+        yaw = math.radians(pose[2])
+        map_x = pose[0] + math.cos(yaw) * point[0] - math.sin(yaw) * point[1]
+        map_y = pose[1] + math.sin(yaw) * point[0] + math.cos(yaw) * point[1]
+        self._obstacle_marks.append((map_x, map_y))
+        self.get_logger().info(
+            f"Obstacle: base=({point[0]:.2f}, {point[1]:.2f})m, "
+            f"map=({map_x:.2f}, {map_y:.2f})m"
+        )
 
     def set_goal_from_fraction(self, fx: float, fy: float) -> None:
         """Convert a click on the map panel (fractional x/y, 0..1) to a map-frame goal."""
@@ -668,7 +790,7 @@ class DashboardNode(Node):
 
         scan_panel = _render_scan_panel(self._scan, PANEL_H, PANEL_W)
         occupancy_panel = _render_occupancy_panel(
-            self._occupancy_grid, pose, self._nav_path, PANEL_H, PANEL_W
+            self._occupancy_grid, pose, self._nav_path, self._obstacle_marks, PANEL_H, PANEL_W
         )
         combined = np.hstack([scan_panel, occupancy_panel])
 
@@ -702,6 +824,16 @@ class DashboardNode(Node):
         _, jpeg = cv2.imencode(".jpg", combined, [cv2.IMWRITE_JPEG_QUALITY, 80])
         with _MjpegHandler.lock:
             _MjpegHandler.latest_jpeg = jpeg.tobytes()
+            if self._camera_image is not None:
+                camera = self._camera_image.copy()
+                cv2.putText(
+                    camera, "click obstacle ground-contact point", (6, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA,
+                )
+                _, camera_jpeg = cv2.imencode(
+                    ".jpg", camera, [cv2.IMWRITE_JPEG_QUALITY, 80]
+                )
+                _MjpegHandler.latest_camera_jpeg = camera_jpeg.tobytes()
 
 
 def main(args: list[str] | None = None) -> None:

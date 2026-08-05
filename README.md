@@ -1,6 +1,30 @@
 # autonomous-rover
 An autonomous robotic vehicle that uses real-time computer vision to detect and avoid obstacles without human intervention.
 
+## Camera ground-obstacle marking
+
+Development and non-ROS unit checks run in the VM. ROS integration and
+hardware checks run only after `scripts/deploy.sh` pushes the current branch,
+updates the Raspberry Pi workspace, and builds it there.
+
+The navigation dashboard can project a clicked camera pixel onto the flat
+ground and mark that point on the current SLAM map. First calibrate the camera:
+
+```bash
+python3 scripts/capture_calibration_frames.py
+python3 scripts/run_camera_calibration.py
+```
+
+Calibration writes the intrinsics to `config/camera_projection_params.yaml`.
+Measure the physical camera mount and fill in `camera_height_m`, `camera_x_m`,
+`camera_y_m`, `camera_pitch_down_deg`, and `camera_yaw_left_deg`; projection is
+intentionally disabled while the height remains zero. Keep the pan/tilt fixed
+at those measured angles. Start navigation, open
+`http://raspberrypi.local:8082`, and click the point where an obstacle touches
+the ground in the camera image. The dashboard logs its `base_link` and `map`
+coordinates and draws an orange marker. Resetting the SLAM map also clears all
+camera obstacle markers.
+
 ---
 
 ## Before you start: power

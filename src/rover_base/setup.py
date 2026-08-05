@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "drive_node = rover_base.drive_node:main",
+            "camera_node = rover_base.camera_node:main",
         ],
     },
 )

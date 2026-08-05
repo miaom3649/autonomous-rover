@@ -1,0 +1,20 @@
+dashboard_node:
+  ros__parameters:
+    # Replace these zeros with values from config/camera.yaml after calibration.
+    camera_fx: 0.0
+    camera_fy: 0.0
+    camera_cx: 0.0
+    camera_cy: 0.0
+    camera_k1: 0.0
+    camera_k2: 0.0
+    camera_p1: 0.0
+    camera_p2: 0.0
+
+    # Measure from base_link. Projection is disabled while height is zero.
+    camera_height_m: 0.0
+    camera_x_m: 0.0
+    camera_y_m: 0.0
+    # Positive means the camera looks below the horizontal plane.
+    camera_pitch_down_deg: 0.0
+    # Positive means the camera looks left of base_link's forward axis.
+    camera_yaw_left_deg: 0.0

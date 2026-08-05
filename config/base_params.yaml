@@ -21,3 +21,9 @@ mode_controller_node:
     # unavailable and stop blocking on it (fail-open — the estop and, in
     # AUTO, the lidar costmap remain the primary safety mechanisms).
     ultrasonic_timeout_s: 1.0
+
+camera_node:
+  ros__parameters:
+    width: 640
+    height: 480
+    fps: 10.0
