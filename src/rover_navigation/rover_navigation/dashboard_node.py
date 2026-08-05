@@ -289,7 +289,7 @@ def _render_occupancy_panel(
     grid: OccupancyGrid | None,
     pose: tuple[float, float, float] | None,
     path: Path | None,
-    obstacle_marks: list[tuple[float, float]],
+    obstacle_marks: list[tuple[float, float, str]],
     h: int,
     w: int,
 ) -> np.ndarray:
@@ -351,14 +351,14 @@ def _render_occupancy_panel(
         cv2.polylines(img, [pts], isClosed=False, color=(255, 0, 255), thickness=2)
         cv2.drawMarker(img, tuple(pts[-1]), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 14, 2)
 
-    for x, y in obstacle_marks:
+    for x, y, label in obstacle_marks:
         col = (x - grid.info.origin.position.x) / res
         row = (y - grid.info.origin.position.y) / res
         if 0 <= col < gw and 0 <= row < gh:
             marker = tuple(round(value) for value in to_display(x, y))
             cv2.drawMarker(img, marker, (0, 165, 255), cv2.MARKER_DIAMOND, 14, 2)
             cv2.putText(
-                img, "obstacle", (marker[0] + 8, marker[1] - 8),
+                img, label, (marker[0] + 8, marker[1] - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 100, 255), 1, cv2.LINE_AA,
             )
 
@@ -526,7 +526,8 @@ class DashboardNode(Node):
         self._nav_status = "未开始"
         self._obstacle_blocked = False
         self._camera_image: np.ndarray | None = None
-        self._obstacle_marks: list[tuple[float, float]] = []
+        self._obstacle_marks: list[tuple[float, float, str]] = []
+        self._detections: list[dict] = []
 
         self.declare_parameter("camera_fx", 0.0)
         self.declare_parameter("camera_fy", 0.0)
@@ -559,6 +560,9 @@ class DashboardNode(Node):
         self.create_subscription(Path, "/plan", self._on_plan, 10)
         self.create_subscription(
             Bool, "/rover/obstacle_blocked", self._on_obstacle_blocked, _MODE_QOS
+        )
+        self.create_subscription(
+            String, "/rover/object_detections", self._on_object_detections, 10
         )
 
         self._mode_pub = self.create_publisher(String, "/rover/mode", _CMD_QOS)
@@ -602,6 +606,26 @@ class DashboardNode(Node):
     def _on_obstacle_blocked(self, msg: Bool) -> None:
         self._obstacle_blocked = msg.data
 
+    def _on_object_detections(self, msg: String) -> None:
+        try:
+            detections = json.loads(msg.data)
+            if not isinstance(detections, list):
+                raise ValueError("detection payload is not a list")
+            self._detections = detections
+            for detection in detections:
+                if not bool(detection.get("project_to_ground", False)):
+                    continue
+                label = str(detection["label"])
+                confidence = float(detection["confidence"])
+                self.mark_obstacle(
+                    (float(detection["x1"]) + float(detection["x2"])) / 2.0,
+                    float(detection["y2"]),
+                    label=f"{label} {confidence:.0%}",
+                    merge_label=label,
+                )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self.get_logger().warn(f"Rejected object detections: {exc}")
+
     def reset_map(self) -> None:
         """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
         self.get_logger().warn("Reset map requested — restarting slam_toolbox")
@@ -609,7 +633,13 @@ class DashboardNode(Node):
         self._obstacle_marks.clear()
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
 
-    def mark_obstacle(self, u_fraction: float, v_fraction: float) -> None:
+    def mark_obstacle(
+        self,
+        u_fraction: float,
+        v_fraction: float,
+        label: str = "obstacle",
+        merge_label: str | None = None,
+    ) -> None:
         """Project a camera click to the ground and retain it in the current map."""
         image = self._camera_image
         pose = self._lookup_pose()
@@ -659,7 +689,27 @@ class DashboardNode(Node):
         yaw = math.radians(pose[2])
         map_x = pose[0] + math.cos(yaw) * point[0] - math.sin(yaw) * point[1]
         map_y = pose[1] + math.sin(yaw) * point[0] + math.cos(yaw) * point[1]
-        self._obstacle_marks.append((map_x, map_y))
+        if merge_label is not None:
+            merge_index = next(
+                (
+                    index
+                    for index, (old_x, old_y, old_label) in enumerate(self._obstacle_marks)
+                    if old_label.startswith(merge_label + " ")
+                    and math.hypot(map_x - old_x, map_y - old_y) < 0.25
+                ),
+                None,
+            )
+            if merge_index is not None:
+                old_x, old_y, _ = self._obstacle_marks[merge_index]
+                self._obstacle_marks[merge_index] = (
+                    0.7 * old_x + 0.3 * map_x,
+                    0.7 * old_y + 0.3 * map_y,
+                    label,
+                )
+            else:
+                self._obstacle_marks.append((map_x, map_y, label))
+        else:
+            self._obstacle_marks.append((map_x, map_y, label))
         self.get_logger().info(
             f"Obstacle: base=({point[0]:.2f}, {point[1]:.2f})m, "
             f"map=({map_x:.2f}, {map_y:.2f})m"
@@ -835,6 +885,19 @@ class DashboardNode(Node):
             _MjpegHandler.latest_jpeg = jpeg.tobytes()
             if self._camera_image is not None:
                 camera = self._camera_image.copy()
+                height, width = camera.shape[:2]
+                for detection in self._detections:
+                    x1 = round(float(detection["x1"]) * width)
+                    y1 = round(float(detection["y1"]) * height)
+                    x2 = round(float(detection["x2"]) * width)
+                    y2 = round(float(detection["y2"]) * height)
+                    label = f'{detection["label"]} {float(detection["confidence"]):.0%}'
+                    cv2.rectangle(camera, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.circle(camera, ((x1 + x2) // 2, y2), 5, (0, 165, 255), -1)
+                    cv2.putText(
+                        camera, label, (x1, max(16, y1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA,
+                    )
                 cv2.putText(
                     camera, "click obstacle ground-contact point", (6, 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA,

@@ -22,6 +22,9 @@ def generate_launch_description() -> LaunchDescription:
     camera_projection_params = os.path.join(
         home, "dev", "autonomous-rover", "config", "camera_projection_params.yaml"
     )
+    object_detection_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "object_detection_params.yaml"
+    )
 
     return LaunchDescription(
         [
@@ -80,6 +83,12 @@ def generate_launch_description() -> LaunchDescription:
                 executable="camera_node",
                 name="camera_node",
                 parameters=[base_params, {"use_sim": use_sim}],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="object_detector_node",
+                name="object_detector_node",
+                parameters=[object_detection_params],
             ),
             # ── Lidar (YDLidar X3, primary localization/mapping sensor) ──
             Node(

@@ -25,6 +25,24 @@ the ground in the camera image. The dashboard logs its `base_link` and `map`
 coordinates and draws an orange marker. Resetting the SLAM map also clears all
 camera obstacle markers.
 
+### Automatic object detection
+
+YOLO inference runs on the Windows GPU rather than the Raspberry Pi. In a
+Windows virtual environment, install `scripts/windows_depth_server/requirements.txt`
+and start:
+
+```powershell
+python scripts/windows_depth_server/object_server.py
+```
+
+The first run downloads the small `yolo11n.pt` model. Set `server_url` in
+`config/object_detection_params.yaml` to the Windows LAN address, for example
+`http://192.168.3.100:8766/detect`, then deploy and start navigation normally.
+The camera view shows every YOLO box. Only classes listed in `ground_labels`
+are projected from the box's bottom centre onto the map, because the flat-ground
+projection is invalid for objects resting on tables or shelves. Nearby repeated
+detections of the same class are merged into one semantic marker.
+
 ---
 
 ## Before you start: power
