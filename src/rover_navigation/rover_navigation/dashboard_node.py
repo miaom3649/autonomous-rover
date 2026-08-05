@@ -72,7 +72,7 @@ from rover_navigation.ground_projection import pixel_to_ground
 PORT = 8082
 STALE_AFTER_S = 2.0
 # action_msgs/msg/GoalStatus terminal values
-_GOAL_STATUS_TEXT = {4: "成功到达", 5: "已取消", 6: "导航失败"}
+_GOAL_STATUS_TEXT = {4: "Goal reached", 5: "Canceled", 6: "Navigation failed"}
 PANEL_H = 480
 PANEL_W = 640
 SCAN_DISPLAY_RADIUS_M = 4.0
@@ -100,6 +100,7 @@ _INDEX_HTML = """<!doctype html>
   <div id="navStatus">nav: —</div>
   <div id="toolbar">
     <button id="resetBtn">Reset map</button>
+    <button id="clearMarkersBtn">Clear markers</button>
     <button id="moveBtn">Move</button>
     <button id="clearBtn">Clear goal</button>
     <button id="modeBtn">Toggle mode</button>
@@ -137,6 +138,9 @@ _INDEX_HTML = """<!doctype html>
 
     document.getElementById('resetBtn').onclick = async () => {
       flash((await post('/reset')) ? 'map reset' : 'failed');
+    };
+    document.getElementById('clearMarkersBtn').onclick = async () => {
+      flash((await post('/markers/clear')) ? 'markers cleared' : 'failed');
     };
     document.getElementById('moveBtn').onclick = async () => {
       flash((await post('/goal/move')) ? 'moving...' : 'failed');
@@ -198,7 +202,7 @@ _INDEX_HTML = """<!doctype html>
         const resp = await fetch('/nav_status');
         const data = await resp.json();
         let text = 'nav: ' + data.status;
-        if (data.obstacle_blocked) text += '  |  ⚠ 前方障碍物,紧急停止';
+        if (data.obstacle_blocked) text += '  |  WARNING: obstacle blocking forward motion';
         navStatus.textContent = text;
         navStatus.classList.toggle('obstacle', !!data.obstacle_blocked);
       } catch (e) { /* keep last known text on a transient fetch failure */ }
@@ -407,6 +411,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     # each just forwards to one DashboardNode method.
     _ROUTES = {
         "/reset": lambda node, body: node.reset_map(),
+        "/markers/clear": lambda node, body: node.clear_markers(),
         "/goal/set": lambda node, body: node.set_goal_from_fraction(
             float(body.get("fx", 0.5)), float(body.get("fy", 0.5))
         ),
@@ -435,7 +440,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     def _serve_nav_status(self) -> None:
         node = _MjpegHandler.node
         payload = {
-            "status": node._nav_status if node else "未知",
+            "status": node._nav_status if node else "Unknown",
             "obstacle_blocked": node._obstacle_blocked if node else False,
         }
         body = json.dumps(payload).encode("utf-8")
@@ -523,7 +528,7 @@ class DashboardNode(Node):
         self._ultrasonic_stamp = 0.0
         self._goal_pose: tuple[float, float, float] | None = None
         self._nav_goal_handle = None
-        self._nav_status = "未开始"
+        self._nav_status = "Not started"
         self._obstacle_blocked = False
         self._camera_image: np.ndarray | None = None
         self._obstacle_marks: list[tuple[float, float, str, float | None]] = []
@@ -636,6 +641,11 @@ class DashboardNode(Node):
         self._occupancy_grid = None
         self._obstacle_marks.clear()
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
+
+    def clear_markers(self) -> None:
+        """Clear camera-derived map markers without resetting SLAM."""
+        self._obstacle_marks.clear()
+        self.get_logger().info("All camera obstacle markers cleared")
 
     def mark_obstacle(
         self,
@@ -752,9 +762,9 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("compute_path_to_pose goal rejected")
-            self._nav_status = "路线规划失败"
+            self._nav_status = "Path planning failed"
             return
-        self._nav_status = "已规划,等待移动"
+        self._nav_status = "Path ready; waiting to move"
         # No further action needed — planner_server publishes the resulting
         # path to /plan itself, which _on_plan/_render already pick up.
         goal_handle.get_result_async()
@@ -775,10 +785,10 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("navigate_to_pose goal rejected")
-            self._nav_status = "导航被拒绝"
+            self._nav_status = "Navigation rejected"
             return
         self._nav_goal_handle = goal_handle
-        self._nav_status = "导航中"
+        self._nav_status = "Navigating"
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_navigate_result)
 
@@ -786,7 +796,7 @@ class DashboardNode(Node):
         self._nav_goal_handle = None
         status = future.result().status
         self.get_logger().info(f"navigate_to_pose finished: status={status}")
-        self._nav_status = _GOAL_STATUS_TEXT.get(status, f"未知状态({status})")
+        self._nav_status = _GOAL_STATUS_TEXT.get(status, f"Unknown status ({status})")
         # Without wheel odometry, slam_toolbox occasionally mismatches a scan
         # and permanently bakes a cluster of phantom points into the map —
         # errors only accumulate over a run, never self-correct. Wiping the
@@ -798,7 +808,7 @@ class DashboardNode(Node):
         """Cancel any in-flight navigation and clear the local goal/path state."""
         self._goal_pose = None
         self._nav_path = None
-        self._nav_status = "未开始"
+        self._nav_status = "Not started"
         if self._nav_goal_handle is not None:
             self._nav_goal_handle.cancel_goal_async()
             self._nav_goal_handle = None
