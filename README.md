@@ -28,11 +28,11 @@ camera obstacle markers.
 ### Automatic object detection
 
 YOLO inference runs on the Windows GPU rather than the Raspberry Pi. In a
-Windows virtual environment, install `scripts/windows_depth_server/requirements.txt`
+Windows virtual environment, install `windows_ai_server/requirements.txt`
 and start:
 
 ```powershell
-python scripts/windows_depth_server/object_server.py
+python windows_ai_server/object_server.py
 ```
 
 The first run downloads the small `yolo11n.pt` model. Set `server_url` in
