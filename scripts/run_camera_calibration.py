@@ -22,6 +22,7 @@ import yaml
 
 FRAMES_DIR = Path("/tmp/calibration_frames")
 OUTPUT_YAML = Path("config/camera.yaml")
+PROJECTION_OUTPUT_YAML = Path("config/camera_projection_params.yaml")
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,6 +141,31 @@ def write_yaml(
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
+def write_projection_yaml(path: Path, mtx: np.ndarray, dist: np.ndarray) -> None:
+    """Write intrinsics while leaving physical mount measurements explicit."""
+    data = {
+        "dashboard_node": {
+            "ros__parameters": {
+                "camera_fx": float(mtx[0, 0]),
+                "camera_fy": float(mtx[1, 1]),
+                "camera_cx": float(mtx[0, 2]),
+                "camera_cy": float(mtx[1, 2]),
+                "camera_k1": float(dist[0, 0]),
+                "camera_k2": float(dist[0, 1]),
+                "camera_p1": float(dist[0, 2]),
+                "camera_p2": float(dist[0, 3]),
+                "camera_height_m": 0.0,
+                "camera_x_m": 0.0,
+                "camera_y_m": 0.0,
+                "camera_pitch_down_deg": 0.0,
+                "camera_yaw_left_deg": 0.0,
+            }
+        }
+    }
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -190,10 +216,13 @@ def main() -> None:
         h = round(h * args.scale)
         print(f"\nScaled intrinsics by {args.scale} → output size {w}x{h}")
     write_yaml(OUTPUT_YAML, mtx, dist, w, h, rms)
+    write_projection_yaml(PROJECTION_OUTPUT_YAML, mtx, dist)
 
     print(f"\nCalibration complete — RMS reprojection error: {rms:.4f} px")
     print(f"(Good calibration is typically < 1.0 px)")
     print(f"\nSaved to: {OUTPUT_YAML}")
+    print(f"Projection parameters: {PROJECTION_OUTPUT_YAML}")
+    print("Measure the camera mount and fill in height/x/y/pitch/yaw before projecting.")
     print(f"  fx={mtx[0,0]:.2f}  fy={mtx[1,1]:.2f}")
     print(f"  cx={mtx[0,2]:.2f}  cy={mtx[1,2]:.2f}")
     print(f"  k1={dist[0,0]:.5f}  k2={dist[0,1]:.5f}")

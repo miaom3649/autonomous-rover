@@ -1,7 +1,7 @@
 drive_node:
   ros__parameters:
     max_linear_vel: 0.5
-    max_angular_vel: 2.0
+    wheelbase_m: 0.10  # PLACEHOLDER — measure the real front/rear axle distance
     max_motor_speed: 50
     max_steering_angle: 30.0
     cmd_timeout: 0.5
@@ -9,3 +9,21 @@ drive_node:
     # 1 = j turns left (default ROS convention)
     # -1 = j turns right (flip if steering is reversed)
     steering_sign: -1
+
+mode_controller_node:
+  ros__parameters:
+    # Last-resort forward-motion cutoff from the onboard ultrasonic sensor.
+    # Applies in both MANUAL and AUTO — Nav2's lidar costmap already avoids
+    # obstacles in AUTO, but the lidar is a single scan plane and can miss
+    # low obstacles; MANUAL teleop has no obstacle avoidance at all otherwise.
+    min_obstacle_distance_m: 0.15
+    # If no ultrasonic reading arrives within this long, treat the sensor as
+    # unavailable and stop blocking on it (fail-open — the estop and, in
+    # AUTO, the lidar costmap remain the primary safety mechanisms).
+    ultrasonic_timeout_s: 1.0
+
+camera_node:
+  ros__parameters:
+    width: 640
+    height: 480
+    fps: 10.0

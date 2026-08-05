@@ -1,3 +1,5 @@
+import math
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -19,7 +21,7 @@ class DriveNode(Node):
 
         self.declare_parameter("use_sim", False)
         self.declare_parameter("max_linear_vel", 0.5)
-        self.declare_parameter("max_angular_vel", 2.0)
+        self.declare_parameter("wheelbase_m", 0.10)  # PLACEHOLDER — measure axle-to-axle
         self.declare_parameter("max_motor_speed", 50)
         self.declare_parameter("max_steering_angle", 30.0)
         self.declare_parameter("cmd_timeout", 0.5)
@@ -28,7 +30,7 @@ class DriveNode(Node):
 
         self._use_sim = self.get_parameter("use_sim").value
         self._max_linear = self.get_parameter("max_linear_vel").value
-        self._max_angular = self.get_parameter("max_angular_vel").value
+        self._wheelbase = self.get_parameter("wheelbase_m").value
         self._max_speed = self.get_parameter("max_motor_speed").value
         self._max_angle = self.get_parameter("max_steering_angle").value
         self._cmd_timeout = self.get_parameter("cmd_timeout").value
@@ -38,8 +40,8 @@ class DriveNode(Node):
         if not self._use_sim:
             from picarx import Picarx  # type: ignore[import]
             self._px = Picarx()
-            self._px.set_cam_tilt_angle(-13)
-            self._px.set_cam_pan_angle(16)
+            self._px.set_cam_tilt_angle(2)
+            self._px.set_cam_pan_angle(13)
         else:
             self._px = None
 
@@ -68,9 +70,20 @@ class DriveNode(Node):
                 min(self._max_speed,
                     linear_x / self._max_linear * self._max_speed))
         )
-        angle = max(-self._max_angle,
-                    min(self._max_angle,
-                        self._steering_sign * angular_z / self._max_angular * self._max_angle))
+
+        # Ackermann steering angle from curvature (bicycle model), not a
+        # flat linear scale of angular_z: the wheel angle needed for a given
+        # turn depends on speed too — curvature = angular_z / linear_x, so
+        # the same angular_z means a much sharper required turn at low speed
+        # than at high speed. Scaling angular_z alone (the old formula)
+        # ignored that entirely, badly understeering at Nav2's slow cruise
+        # speed and leaving the rover barely tracking curved paths at all.
+        if abs(linear_x) < 1e-3:
+            angle = 0.0
+        else:
+            curvature = angular_z / linear_x
+            angle = self._steering_sign * math.degrees(math.atan(self._wheelbase * curvature))
+            angle = max(-self._max_angle, min(self._max_angle, angle))
 
         if self._use_sim:
             self.get_logger().debug(f"[sim] speed={speed} angle={angle:.1f}°")

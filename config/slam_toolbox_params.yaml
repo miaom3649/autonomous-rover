@@ -9,18 +9,28 @@ slam_toolbox:
     base_frame: base_link
     scan_topic: /scan
 
-    # Use the odometry from ORB-SLAM3 (via slam_pose_bridge)
-    use_pose_extrapolator: false
+    # No wheel encoders on this rover — odom_frame -> base_frame now comes from
+    # rf2o_laser_odometry (pure lidar scan-to-scan odometry, see nav.launch.py)
+    # instead of the old static-identity placeholder, giving slam_toolbox a
+    # real (if imperfect — it drifts like any odometry) motion prior to narrow
+    # its own scan-matching search around, rather than searching blind.
+    use_scan_matching: true
+
+    # Kept at 0 so slam_toolbox still processes every incoming scan rather
+    # than gating on rf2o's own movement estimate, which has no independent
+    # way to detect wheel slip / mismatches of its own to be gated on.
+    minimum_travel_distance: 0.0
+    minimum_travel_heading: 0.0
 
     # Map resolution and update rate (Pi 4 tuned)
     resolution: 0.05
     max_laser_range: 4.0
-    minimum_travel_distance: 0.05
-    minimum_travel_heading: 0.1
-    map_update_interval: 2.0
+    map_update_interval: 1.0
 
-    # Disable loop closure to save CPU on Pi 4
-    do_loop_closing: false
+    # Corrects the drift that builds up from having no wheel odometry (see
+    # use_scan_matching above) by re-aligning the map when the rover revisits
+    # a place — costs more CPU on the Pi 4, worth watching for lag.
+    do_loop_closing: true
 
     # Serialization (for map saving)
     map_file_name: ""

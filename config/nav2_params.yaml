@@ -46,17 +46,29 @@ controller_server:
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       required_movement_radius: 0.1
-      movement_time_allowance: 30.0
+      # Was 30s — too slow to react when the ultrasonic e-stop (invisible to
+      # Nav2's own costmap) blocks forward motion; 5s gets the backup/retry
+      # recovery going much sooner.
+      movement_time_allowance: 5.0
 
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.1   # 10 cm
-      yaw_goal_tolerance: 0.2  # ~11 degrees
+      xy_goal_tolerance: 0.15  # 15 cm — was 10cm, too tight: small heading
+      # error was enough to graze past the goal instead of registering it as
+      # reached, letting the goal drift behind the robot (see allow_reversing).
+      # Yaw check effectively disabled: this is Ackermann steering with a
+      # 0.2m min turning radius, larger than the 0.15m xy tolerance above —
+      # fine-tuning heading at the goal requires a turn wide enough to drive
+      # back out of the xy tolerance, which then requires re-approaching,
+      # which breaks yaw again, forever (the endless spin-in-place-ish
+      # wiggling seen at goals). Position-only arrival is what's achievable.
+      # 3.15 rad > pi, the max possible heading error, so this always passes.
+      yaw_goal_tolerance: 3.15
       stateful: true
 
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.2          # m/s — conservative speed
+      desired_linear_vel: 0.10         # m/s — matches backup_speed, a known-working low speed
       lookahead_dist: 0.4
       min_lookahead_dist: 0.3
       max_lookahead_dist: 0.6
@@ -71,9 +83,17 @@ controller_server:
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.25
+      regulated_linear_scaling_min_speed: 0.08
       use_rotate_to_heading: false      # Ackermann — cannot rotate in place
-      allow_reversing: false
+      # If the robot overshoots and the goal ends up behind it, pure pursuit's
+      # aim-at-a-nearby-path-point logic has no way to "turn around" without
+      # rotating in place or reversing — with both those normally off, it was
+      # left driving straight, away from the goal, forever. Reversing lets it
+      # back toward a behind-it goal instead. Backing up mostly retraces
+      # ground the lidar scanned seconds ago driving forward through it, so
+      # this isn't as blind as reversing usually is — the main residual risk
+      # is something moving into that space in the few seconds since.
+      allow_reversing: true
       rotate_to_heading_min_angle: 0.785
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
@@ -187,47 +207,6 @@ map_saver:
     free_thresh_default: 0.25
     occupied_thresh_default: 0.65
     map_subscribe_transient_local: true
-
-amcl:
-  ros__parameters:
-    use_sim_time: false
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
-    base_frame_id: base_link
-    beam_skip_distance: 0.5
-    beam_skip_error_threshold: 0.9
-    beam_skip_threshold: 0.3
-    do_beamskip: false
-    global_frame_id: map
-    lambda_short: 0.1
-    laser_likelihood_max_dist: 2.0
-    laser_max_range: 100.0
-    laser_min_range: -1.0
-    laser_model_type: likelihood_field
-    max_beams: 60
-    max_particles: 1000   # reduced for Pi 4
-    min_particles: 200
-    odom_frame_id: odom
-    pf_err: 0.05
-    pf_z: 0.99
-    recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
-    resample_interval: 1
-    robot_model_type: nav2_amcl::DifferentialMotionModel
-    save_pose_rate: 0.5
-    sigma_hit: 0.2
-    tf_broadcast: true
-    transform_tolerance: 1.0
-    update_min_a: 0.2
-    update_min_d: 0.25
-    z_hit: 0.5
-    z_max: 0.05
-    z_rand: 0.5
-    z_short: 0.05
-    scan_topic: /rover/ultrasonic/range
 
 lifecycle_manager:
   ros__parameters:

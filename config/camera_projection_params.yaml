@@ -1,0 +1,15 @@
+dashboard_node:
+  ros__parameters:
+    camera_fx: 680.2496636111802
+    camera_fy: 672.7235413789114
+    camera_cx: 308.3640273182649
+    camera_cy: 289.87880947564975
+    camera_k1: 0.4220602828901203
+    camera_k2: -1.830994516110213
+    camera_p1: 0.038058554584851745
+    camera_p2: -0.016705661311283294
+    camera_height_m: 0.08
+    camera_x_m: 0.08
+    camera_y_m: 0.0
+    camera_pitch_down_deg: 2.5
+    camera_yaw_left_deg: -1.8

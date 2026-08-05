@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -10,139 +10,199 @@ def generate_launch_description() -> LaunchDescription:
     use_sim = LaunchConfiguration("use_sim")
 
     home = os.path.expanduser("~")
-    vocab_path = os.path.join(home, "ORB_SLAM3", "Vocabulary", "ORBvoc.txt")
-    settings_path = os.path.join(home, "dev", "autonomous-rover", "config", "orbslam3.yaml")
     base_params = os.path.join(home, "dev", "autonomous-rover", "config", "base_params.yaml")
     nav2_params = os.path.join(home, "dev", "autonomous-rover", "config", "nav2_params.yaml")
+    lidar_params = os.path.join(
+        home, "dev", "autonomous-rover", "src", "ydlidar_ros2_driver", "params", "X3.yaml"
+    )
+    slam_toolbox_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "slam_toolbox_params.yaml"
+    )
+    rf2o_params = os.path.join(home, "dev", "autonomous-rover", "config", "rf2o_params.yaml")
+    camera_projection_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "camera_projection_params.yaml"
+    )
+    object_detection_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "object_detection_params.yaml"
+    )
 
-    return LaunchDescription([
-        DeclareLaunchArgument("use_sim", default_value="false",
-                              description="Run in simulation mode (no hardware required)"),
-        DeclareLaunchArgument("depth_server_url", default_value="http://192.168.1.151:8765/depth",
-                              description="URL of the Windows depth inference server"),
-
-        # ── Hardware nodes ────────────────────────────────────────────────────
-        Node(
-            package="rover_base",
-            executable="drive_node",
-            name="drive_node",
-            parameters=[base_params, {"use_sim": use_sim}],
-        ),
-        Node(
-            package="rover_camera",
-            executable="camera_node",
-            name="camera_node",
-            parameters=[{"use_sim": use_sim, "frame_width": 320, "frame_height": 240}],
-        ),
-        # ── Depth bridge (grabs frames at stops, fetches metric depth from Windows GPU) ──
-        Node(
-            package="rover_navigation",
-            executable="depth_bridge_node",
-            name="depth_bridge_node",
-            parameters=[{
-                "depth_server_url": LaunchConfiguration("depth_server_url"),
-                "settle_delay": 0.5,
-                "request_timeout": 0.8,
-            }],
-            output="screen",
-        ),
-
-        # ── ORB-SLAM3 (visual odometry) ───────────────────────────────────────
-        Node(
-            package="rover_slam",
-            executable="orb_slam3_node",
-            name="orb_slam3_node",
-            parameters=[{
-                "vocab_path": vocab_path,
-                "settings_path": settings_path,
-            }],
-            output="screen",
-            sigterm_timeout="3",
-            sigkill_timeout="3",
-        ),
-        Node(
-            package="rover_navigation",
-            executable="slam_pose_bridge",
-            name="slam_pose_bridge",
-            parameters=[{"camera_tilt_deg": -13.0, "position_scale": 9.6}],
-        ),
-
-        # ── SLAM initialisation helper (pan sweep until tracking starts) ─────
-        Node(
-            package="rover_navigation",
-            executable="slam_init_helper_node",
-            name="slam_init_helper_node",
-        ),
-
-        # ── Ultrasonic → LaserScan ────────────────────────────────────────────
-        Node(
-            package="rover_navigation",
-            executable="ultrasonic_to_scan_node",
-            name="ultrasonic_to_scan_node",
-        ),
-
-        # ── map→odom: static identity — ORB-SLAM3 is the only position source ──
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="map_to_odom_static",
-            arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
-        ),
-
-        # ── Stop-and-go filter (gates Nav2 cmd_vel into move/pause bursts) ──
-        Node(
-            package="rover_navigation",
-            executable="stop_and_go_filter_node",
-            name="stop_and_go_filter_node",
-            parameters=[{
-                "move_duration": 0.5,
-                "pause_duration": 0.9,
-                "slam_loss_grace": 2.0,
-                "backup_speed": 0.10,
-                "backup_duration": 1.0,
-                "slam_stabilize_duration": 5.0,
-            }],
-        ),
-
-        # ── Mode controller (MANUAL/AUTO arbitration + estop) ────────────────
-        Node(
-            package="rover_control",
-            executable="mode_controller_node",
-            name="mode_controller_node",
-            remappings=[("/rover/cmd_vel_nav", "/rover/cmd_vel_nav_gated")],
-        ),
-
-        # ── Nav2 stack ────────────────────────────────────────────────────────
-        Node(
-            package="nav2_controller",
-            executable="controller_server",
-            name="controller_server",
-            parameters=[nav2_params],
-            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
-        ),
-        Node(
-            package="nav2_planner",
-            executable="planner_server",
-            name="planner_server",
-            parameters=[nav2_params],
-        ),
-        Node(
-            package="nav2_behaviors",
-            executable="behavior_server",
-            name="behavior_server",
-            parameters=[nav2_params],
-            remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
-        ),
-        Node(
-            package="nav2_bt_navigator",
-            executable="bt_navigator",
-            name="bt_navigator",
-            parameters=[nav2_params],
-        ),
-        Node(
-            package="nav2_lifecycle_manager",
-            executable="lifecycle_manager",
-            name="lifecycle_manager",
-            parameters=[nav2_params],
-        ),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "use_sim",
+                default_value="false",
+                description="Run in simulation mode (no hardware required)",
+            ),
+            DeclareLaunchArgument(
+                "dashboard_start_delay",
+                default_value="5.0",
+                description="Seconds to wait before starting dashboard_node, staggering it "
+                "slightly behind the rest of the startup rather than starting everything "
+                "at t=0 at once.",
+            ),
+            DeclareLaunchArgument(
+                "nav2_start_delay",
+                default_value="15.0",
+                description=(
+                    "Seconds to wait before starting the Nav2 stack. Lower than the old "
+                    "ORB-SLAM3-era value (45.0) — slam_toolbox has no large vocabulary "
+                    "file to load, so the startup memory-pressure risk that justified "
+                    "the longer delay doesn't apply the same way here."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "lidar_x",
+                default_value="0.0",
+                description="Lidar x offset from base_link, meters — PLACEHOLDER, measure "
+                "once the lidar is permanently mounted.",
+            ),
+            DeclareLaunchArgument(
+                "lidar_y",
+                default_value="0.0",
+                description="Lidar y offset from base_link, meters — PLACEHOLDER.",
+            ),
+            DeclareLaunchArgument(
+                "lidar_z",
+                default_value="0.05",
+                description="Lidar z offset from base_link, meters — PLACEHOLDER.",
+            ),
+            DeclareLaunchArgument(
+                "lidar_yaw",
+                default_value="0.130900",
+                description="Lidar yaw offset from base_link, radians (calibrated +7.5 deg).",
+            ),
+            # ── Hardware nodes ──
+            Node(
+                package="rover_base",
+                executable="drive_node",
+                name="drive_node",
+                parameters=[base_params, {"use_sim": use_sim}],
+            ),
+            Node(
+                package="rover_base",
+                executable="camera_node",
+                name="camera_node",
+                parameters=[base_params, {"use_sim": use_sim}],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="object_detector_node",
+                name="object_detector_node",
+                parameters=[object_detection_params],
+            ),
+            # ── Lidar (YDLidar X3, primary localization/mapping sensor) ──
+            Node(
+                package="ydlidar_ros2_driver",
+                executable="ydlidar_ros2_driver_node",
+                name="ydlidar_ros2_driver_node",
+                parameters=[lidar_params],
+                output="screen",
+            ),
+            # ── Laser odometry (rf2o) — this rover has no wheel encoders, so this
+            # estimates odom -> base_link purely from consecutive /scan frames and
+            # publishes both /rover/odom and the TF, replacing the old static-
+            # identity placeholder. Gives slam_toolbox a real motion prior to
+            # narrow its scan-matching search around instead of searching blind.
+            Node(
+                package="rf2o_laser_odometry",
+                executable="rf2o_laser_odometry_node",
+                name="rf2o_laser_odometry",
+                parameters=[rf2o_params],
+                arguments=["--ros-args", "--log-level", "error"],
+                output="screen",
+            ),
+            # ── slam_toolbox (mapping mode, pure scan-matching — no wheel odometry) ──
+            # respawn=True: slam_toolbox has no "clear map" service, so dashboard_node's
+            # reset-map button resets by killing this process outright — launch then
+            # restarts it fresh (map_file_name is "" in slam_toolbox_params.yaml, so a
+            # fresh process always starts from a blank map).
+            Node(
+                package="slam_toolbox",
+                executable="async_slam_toolbox_node",
+                name="slam_toolbox",
+                parameters=[slam_toolbox_params],
+                output="screen",
+                respawn=True,
+                respawn_delay=1.0,
+            ),
+            # ── TF: base_link -> laser_frame, static (measure once mounted) ──
+            Node(
+                package="tf2_ros",
+                executable="static_transform_publisher",
+                name="base_link_to_laser_static",
+                arguments=[
+                    LaunchConfiguration("lidar_x"),
+                    LaunchConfiguration("lidar_y"),
+                    LaunchConfiguration("lidar_z"),
+                    LaunchConfiguration("lidar_yaw"),
+                    "0",
+                    "0",
+                    "base_link",
+                    "laser_frame",
+                ],
+            ),
+            # odom -> base_link is now published dynamically by rf2o_laser_odometry
+            # above, not a static identity transform.
+            # ── Mode controller (MANUAL/AUTO arbitration + estop) ──
+            Node(
+                package="rover_control",
+                executable="mode_controller_node",
+                name="mode_controller_node",
+                parameters=[base_params],
+            ),
+            # ── Live debug dashboard (lidar/mode/ultrasonic/position on :8082) ──
+            TimerAction(
+                period=LaunchConfiguration("dashboard_start_delay"),
+                actions=[
+                    Node(
+                        package="rover_navigation",
+                        executable="dashboard_node",
+                        name="dashboard_node",
+                        parameters=[camera_projection_params],
+                    ),
+                ],
+            ),
+            # ── Nav2 stack ──
+            # Delayed: see nav2_start_delay above. Output remapped straight to
+            # /rover/cmd_vel_nav — lidar gives continuous, fast localization (no AI
+            # round trip to wait on), so there's no need for the old burst/pause
+            # filter that used to sit between Nav2 and mode_controller_node.
+            TimerAction(
+                period=LaunchConfiguration("nav2_start_delay"),
+                actions=[
+                    Node(
+                        package="nav2_controller",
+                        executable="controller_server",
+                        name="controller_server",
+                        parameters=[nav2_params],
+                        remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
+                    ),
+                    Node(
+                        package="nav2_planner",
+                        executable="planner_server",
+                        name="planner_server",
+                        parameters=[nav2_params],
+                    ),
+                    Node(
+                        package="nav2_behaviors",
+                        executable="behavior_server",
+                        name="behavior_server",
+                        parameters=[nav2_params],
+                        remappings=[("/cmd_vel", "/rover/cmd_vel_nav")],
+                    ),
+                    Node(
+                        package="nav2_bt_navigator",
+                        executable="bt_navigator",
+                        name="bt_navigator",
+                        parameters=[nav2_params],
+                    ),
+                    Node(
+                        package="nav2_lifecycle_manager",
+                        executable="lifecycle_manager",
+                        name="lifecycle_manager",
+                        parameters=[nav2_params],
+                    ),
+                ],
+            ),
+        ]
+    )
