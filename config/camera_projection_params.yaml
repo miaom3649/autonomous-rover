@@ -12,4 +12,4 @@ dashboard_node:
     camera_x_m: 0.08
     camera_y_m: 0.0
     camera_pitch_down_deg: 2.5
-    camera_yaw_left_deg: 0.0
+    camera_yaw_left_deg: -1.8
