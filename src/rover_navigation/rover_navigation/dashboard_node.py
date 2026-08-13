@@ -85,7 +85,7 @@ _INDEX_HTML = """<!doctype html>
   * { box-sizing:border-box; }
   html, body { margin:0; width:100%; height:100%; background:#111; color:#eee;
                font-family:sans-serif; user-select:none; overflow:hidden; }
-  body { display:grid; grid-template-rows:auto auto minmax(0, 1fr); }
+  body { display:grid; grid-template-rows:auto auto auto minmax(0, 1fr); }
   button, input { font-size:clamp(11px, 1.1vw, 15px); padding:5px 9px; max-width:100%; }
   #toolbar { padding:5px; display:flex; gap:4px; flex-wrap:wrap; align-items:center;
              width:100%; }
@@ -105,14 +105,22 @@ _INDEX_HTML = """<!doctype html>
     padding:6px 12px; font-size:14px; background:#333; border-bottom:1px solid #000;
   }
   #navStatus.obstacle { background:#5a1a1a; color:#ffb3b3; }
-  #mapWrap { position:relative; width:100%; height:100%; min-height:0; overflow:hidden; }
-  #stream { width:100%; height:100%; object-fit:fill; display:block; background:#000; }
+  #mapWrap { position:relative; min-width:0; min-height:0; overflow:hidden; place-self:center; background:#000; }
+  #stream { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
   #traceCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
   #tooltip { position:fixed; display:none; background:#222; border:1px solid #aaa;
              padding:7px; white-space:pre; font-size:12px; pointer-events:none; z-index:5; }
-  #camera { width:100%; height:100%; min-height:0; object-fit:contain;
-            display:block; margin:auto; background:#000; }
+  #camera { min-width:0; min-height:0; object-fit:contain; display:block;
+            place-self:center; margin:auto; background:#000; }
   #keyState { min-width:155px; color:#aaa; font-family:monospace; text-align:center; }
+  #stateCards { display:grid; grid-template-columns:1fr 1fr; gap:5px; padding:4px 5px; }
+  .stateCard { min-width:0; padding:7px; text-align:center; font-weight:900;
+               font-size:clamp(18px, 2.5vw, 34px); letter-spacing:.08em;
+               border:2px solid #555; border-radius:6px; background:#222; }
+  .stateCard.good { color:#75ff91; border-color:#28c76f; background:#10341d; }
+  .stateCard.warn { color:#ffe06b; border-color:#d6a900; background:#3a3108; }
+  .stateCard.bad { color:#ff8c85; border-color:#ff3b30; background:#461411; }
+  .stateCard.info { color:#78c4ff; border-color:#2d8cff; background:#102a43; }
   @media (max-width:700px) {
     #content { grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:2px; padding:0 2px 2px; }
     #toolbar { padding:3px; gap:2px; }
@@ -125,12 +133,14 @@ _INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <div id="navStatus">nav: —</div>
+  <div id="stateCards"><div id="navCard" class="stateCard">NAV: —</div>
+    <div id="mappingCard" class="stateCard">MAPPING: IDLE</div></div>
   <div id="toolbar">
     <button id="resetBtn">Reset map</button>
     <button id="clearMarkersBtn">Clear markers</button>
     <button id="moveBtn">Move</button>
     <button id="clearBtn">Clear goal</button>
-    <button id="modeBtn">Toggle mode</button>
+    <button id="traceToggleBtn">Hide trace</button>
     <button id="mappingStartBtn">Start mapping</button>
     <button id="mappingFinishBtn">Finish mapping</button>
     <button id="workModeBtn">Enter work mode</button>
@@ -191,8 +201,11 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('clearBtn').onclick = async () => {
       flash((await post('/goal/clear')) ? 'goal cleared' : 'failed');
     };
-    document.getElementById('modeBtn').onclick = async () => {
-      flash((await post('/mode/toggle')) ? 'mode toggled' : 'failed');
+    let traceVisible = true;
+    document.getElementById('traceToggleBtn').onclick = () => {
+      traceVisible = !traceVisible;
+      document.getElementById('traceCanvas').style.display = traceVisible ? 'block' : 'none';
+      document.getElementById('traceToggleBtn').textContent = traceVisible ? 'Hide trace' : 'Show trace';
     };
     document.getElementById('mappingStartBtn').onclick = async () => {
       flash((await post('/mapping/start')) ? 'mapping started' : 'failed');
@@ -291,6 +304,15 @@ _INDEX_HTML = """<!doctype html>
 
     // Poll the current navigation status + live obstacle-block state.
     const navStatus = document.getElementById('navStatus');
+    const navCard = document.getElementById('navCard');
+    const mappingCard = document.getElementById('mappingCard');
+    function stateClass(value, kind) {
+      const text = String(value).toUpperCase();
+      if (text.includes('FAIL') || text.includes('INVALID') || text.includes('ABORT')) return 'bad';
+      if (text.includes('RECOVER') || text.includes('RETURN') || text.includes('BLOCK')) return 'warn';
+      if (text.includes('REACHED') || text === 'WORKING' || text === 'MAPPING') return 'good';
+      return kind === 'mapping' && text === 'MAP_READY' ? 'info' : '';
+    }
     async function pollNavStatus() {
       try {
         const resp = await fetch('/nav_status');
@@ -299,6 +321,10 @@ _INDEX_HTML = """<!doctype html>
         if (data.obstacle_blocked) text += '  |  WARNING: obstacle blocking forward motion';
         navStatus.textContent = text;
         navStatus.classList.toggle('obstacle', !!data.obstacle_blocked);
+        navCard.textContent = String(data.status).toUpperCase();
+        mappingCard.textContent = String(data.mapping_state).toUpperCase();
+        navCard.className = 'stateCard ' + stateClass(data.status, 'nav');
+        mappingCard.className = 'stateCard ' + stateClass(data.mapping_state, 'mapping');
       } catch (e) { /* keep last known text on a transient fetch failure */ }
     }
     pollNavStatus();
@@ -315,7 +341,7 @@ _INDEX_HTML = """<!doctype html>
         canvas.height = Math.max(1, Math.round(rect.height));
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        tracePoints = data.points || [];
+        tracePoints = traceVisible ? (data.points || []) : [];
         tracePoints.forEach((p, i) => {
           p.px = p.fx * canvas.width; p.py = p.fy * canvas.height;
           if (i && tracePoints[i-1].fx != null && p.fx != null) {
@@ -329,13 +355,36 @@ _INDEX_HTML = """<!doctype html>
     canvas.onmousemove = (e) => {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
-      const point = tracePoints.find(p => Math.hypot(p.px-x, p.py-y) < 9);
+      const point = tracePoints
+        .filter(p => Math.hypot(p.px-x, p.py-y) < 10)
+        .sort((a,b) => (b.priority-a.priority) ||
+              (Math.hypot(a.px-x,a.py-y)-Math.hypot(b.px-x,b.py-y)))[0];
       if (!point) { tooltip.style.display='none'; return; }
       tooltip.textContent = point.tooltip; tooltip.style.display='block';
       tooltip.style.left=(e.clientX+12)+'px'; tooltip.style.top=(e.clientY+12)+'px';
     };
     canvas.onmouseleave = () => tooltip.style.display='none';
     canvas.onclick = setMapGoalFromClick;
+    function fitMedia() {
+      const mapHost = document.getElementById('mapSection');
+      const mapHint = mapHost.querySelector('#hint');
+      const mw = mapHost.clientWidth, mh = Math.max(1, mapHost.clientHeight-mapHint.offsetHeight);
+      const mapWidth = Math.min(mw, mh * (1280/480));
+      const mapHeight = mapWidth / (1280/480);
+      const mapWrap = document.getElementById('mapWrap');
+      mapWrap.style.width = mapWidth+'px'; mapWrap.style.height = mapHeight+'px';
+      const cameraHost = document.getElementById('cameraSection');
+      const controls = document.getElementById('driveArea');
+      const ch = Math.max(1, cameraHost.clientHeight-cameraHost.querySelector('#hint').offsetHeight-controls.offsetHeight);
+      const cw = cameraHost.clientWidth;
+      const cameraWidth = Math.min(cw, ch*(4/3));
+      const cameraHeight = cameraWidth/(4/3);
+      const camera = document.getElementById('camera');
+      camera.style.width=cameraWidth+'px'; camera.style.height=cameraHeight+'px';
+    }
+    window.addEventListener('resize', fitMedia);
+    new ResizeObserver(fitMedia).observe(document.getElementById('content'));
+    fitMedia();
     updateTrace(); setInterval(updateTrace, 1000);
   </script>
 </body>
@@ -689,6 +738,8 @@ class DashboardNode(Node):
         self._nav_status = "Not started"
         self._obstacle_blocked = False
         self._mapping_status: dict = {"state": "IDLE", "detail": "monitor unavailable"}
+        self._trace_suppressed = False
+        self._trace_session_id: str | None = None
         self._camera_image: np.ndarray | None = None
         self._obstacle_marks: list[tuple[float, float, str, float | None]] = []
         self._detections: list[dict] = []
@@ -782,6 +833,10 @@ class DashboardNode(Node):
     def _on_mapping_status(self, msg: String) -> None:
         try:
             self._mapping_status = json.loads(msg.data)
+            session_id = self._mapping_status.get("session_id")
+            if session_id and session_id != self._trace_session_id:
+                self._trace_session_id = session_id
+                self._trace_suppressed = False
         except json.JSONDecodeError:
             self._mapping_status = {"state": "UNKNOWN", "detail": msg.data}
 
@@ -798,6 +853,8 @@ class DashboardNode(Node):
 
     def mapping_trace(self) -> dict:
         grid = self._occupancy_grid
+        if self._trace_suppressed:
+            return {"status": self._mapping_status, "points": []}
         session = self.latest_session_dir()
         session_dir = str(session) if session else None
         if grid is None or not session_dir:
@@ -823,7 +880,10 @@ class DashboardNode(Node):
             tooltip = (f"time: {item.get('time')}\nstate: {item.get('state')}\n"
                        f"event: {event}\nreasons: {reasons}\naction: {item.get('action', '')}")
             points.append({"fx": fx, "fy": fy, "color": color,
-                           "radius": 6 if event != "HEALTH_SAMPLE" else 3, "tooltip": tooltip})
+                           "radius": 6 if event != "HEALTH_SAMPLE" else 3,
+                           "priority": 2 if event == "CHECKPOINT" else
+                                       (1 if event != "HEALTH_SAMPLE" else 0),
+                           "tooltip": tooltip})
         return {"status": self._mapping_status, "points": points}
 
     def latest_session_dir(self) -> FilePath | None:
@@ -862,6 +922,7 @@ class DashboardNode(Node):
         self.get_logger().warn("Reset map requested — restarting slam_toolbox")
         self._occupancy_grid = None
         self._obstacle_marks.clear()
+        self._trace_suppressed = True
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
 
     def clear_markers(self) -> None:
