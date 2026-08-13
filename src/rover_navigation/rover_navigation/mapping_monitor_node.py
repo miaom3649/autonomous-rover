@@ -31,7 +31,7 @@ class MappingMonitorNode(Node):
             ("scan_timeout_s", 1.0), ("map_timeout_s", 3.0),
             ("min_valid_scan_points", 30), ("failures_before_recovery", 3),
             ("healthy_samples_to_recover", 4), ("recovery_timeout_s", 5.0),
-            ("checkpoint_period_s", 15.0),
+            ("checkpoint_period_s", 15.0), ("mapping_start_timeout_s", 20.0),
         ):
             self.declare_parameter(name, default)
         self.declare_parameter("session_root", "mapping_sessions")
@@ -63,6 +63,7 @@ class MappingMonitorNode(Node):
         self._finish_pose: tuple[float, float, float] | None = None
         self._localization_started_wall = 0.0
         self._localization_ready_count = 0
+        self._mapping_start_time = 0.0
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -75,6 +76,7 @@ class MappingMonitorNode(Node):
         self.create_timer(2.0, self._ensure_slam_running)
         self.create_timer(0.5, self._complete_map_save)
         self.create_timer(0.2, self._check_localization_ready)
+        self.create_timer(0.2, self._check_mapping_ready)
         self._publish_status("no map; click Start mapping")
 
     def _on_scan(self, msg: LaserScan) -> None:
@@ -132,14 +134,46 @@ class MappingMonitorNode(Node):
         self._summary = {"session_id": self._session_dir.name, "map_id": self._session_dir.name,
                          "started_at": datetime.now(timezone.utc).isoformat(), "points": []}
         self._start_slam("mapping", restart=True)
-        self._state, self._previous = "MAPPING", None
+        self._state, self._previous = "STARTING_MAPPING", None
+        self._mapping_start_time = time.monotonic()
         self._failure_count = self._healthy_count = 0
         self._last_checkpoint = time.monotonic() - float(
             self.get_parameter("checkpoint_period_s").value
         )
-        self._set_lock(False)
-        self._record_event("MAPPING_STARTED", [], "monitoring enabled")
-        self._publish_status("mapping started")
+        self._set_lock(True)
+        self._record_event("MAPPING_START_REQUESTED", [], "waiting for map, scan, and TF")
+        self._publish_status("starting mapping; waiting for SLAM readiness")
+
+    def _check_mapping_ready(self) -> None:
+        if self._state != "STARTING_MAPPING":
+            return
+        now = time.monotonic()
+        ready = (
+            self._scan_time > 0.0
+            and now - self._scan_time < self._thresholds.scan_timeout_s
+            and self._map_time > self._mapping_start_time
+            and now - self._map_time < self._thresholds.map_timeout_s
+            and self._pose() is not None
+        )
+        if ready:
+            self._state = "MAPPING"
+            self._previous = None
+            self._failure_count = self._healthy_count = 0
+            self._last_checkpoint = now - float(
+                self.get_parameter("checkpoint_period_s").value
+            )
+            self._set_lock(False)
+            self._record_event("MAPPING_STARTED", [], "SLAM ready; monitoring enabled")
+            self._publish_status("mapping ready")
+            return
+        timeout = float(self.get_parameter("mapping_start_timeout_s").value)
+        if now - self._mapping_start_time >= timeout:
+            self._stop_slam()
+            self._state = "IDLE"
+            self._set_lock(False)
+            self._record_event("MAPPING_START_TIMEOUT", [],
+                               "SLAM did not provide map, scan, and TF before timeout")
+            self._publish_status("mapping failed to start; check SLAM log and retry")
 
     def _complete_map_save(self) -> None:
         if self._state != "SAVING_MAP" or not self._session_dir:
@@ -185,6 +219,7 @@ class MappingMonitorNode(Node):
         self._finish_pose = None
         self._localization_started_wall = 0.0
         self._localization_ready_count = 0
+        self._mapping_start_time = 0.0
 
     def _reset_to_startup(self) -> None:
         if self._session_dir:

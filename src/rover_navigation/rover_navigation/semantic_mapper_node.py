@@ -21,6 +21,7 @@ class SemanticMapperNode(Node):
         self._pub = self.create_publisher(String, "/rover/semantic_objects", 10)
         self.create_subscription(String, "/rover/localized_objects", self._on_objects, 10)
         self.create_subscription(String, "/rover/mapping_status", self._on_mapping_status, 10)
+        self.create_subscription(String, "/rover/semantic_control", self._on_control, 10)
         self.create_timer(5.0, self._maintenance)
 
     def _on_mapping_status(self, msg):
@@ -62,6 +63,14 @@ class SemanticMapperNode(Node):
             self._publish()
         except (KeyError, TypeError, ValueError) as exc:
             self.get_logger().warn(f"Rejected localized objects: {exc}")
+
+    def _on_control(self, msg):
+        if msg.data.strip().upper() != "CLEAR":
+            return
+        if self._store is not None:
+            self._store.clear()
+        self._publish()
+        self.get_logger().info("Current session semantic object database cleared")
 
     def _maintenance(self):
         if self._store is None:

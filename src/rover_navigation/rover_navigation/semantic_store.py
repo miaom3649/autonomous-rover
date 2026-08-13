@@ -75,5 +75,11 @@ class SemanticStore:
         query = "SELECT * FROM objects" + (" WHERE status='confirmed'" if confirmed_only else "")
         return [dict(row) for row in self.connection.execute(query + " ORDER BY id")]
 
+    def clear(self) -> None:
+        """Delete all semantic objects in the current map session."""
+        self.connection.execute("DELETE FROM objects")
+        self.connection.execute("DELETE FROM sqlite_sequence WHERE name='objects'")
+        self.connection.commit()
+
     def close(self) -> None:
         self.connection.close()

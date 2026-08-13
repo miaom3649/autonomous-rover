@@ -311,7 +311,7 @@ _INDEX_HTML = """<!doctype html>
       const text = String(value).toUpperCase();
       if (text.includes('FAIL') || text.includes('INVALID') || text.includes('ABORT')) return 'bad';
       if (text.includes('RECOVER') || text.includes('RETURN') || text.includes('BLOCK') ||
-          text.includes('LOCALIZ') || text.includes('SAVING')) return 'warn';
+          text.includes('LOCALIZ') || text.includes('SAVING') || text.includes('STARTING')) return 'warn';
       if (text.includes('REACHED') || text === 'WORKING' || text === 'MAPPING') return 'good';
       return kind === 'mapping' && text === 'SAVING_MAP' ? 'info' : '';
     }
@@ -812,6 +812,7 @@ class DashboardNode(Node):
         self._mode_pub = self.create_publisher(String, "/rover/mode", _CMD_QOS)
         self._mapping_control_pub = self.create_publisher(String, "/rover/mapping_control", 10)
         self._semantic_goal_pub = self.create_publisher(String, "/rover/semantic_goal", 10)
+        self._semantic_control_pub = self.create_publisher(String, "/rover/semantic_control", 10)
         self._teleop_pub = self.create_publisher(Twist, "/rover/cmd_vel_teleop", _CMD_QOS)
         self._compute_path_client = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self._navigate_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -991,9 +992,10 @@ class DashboardNode(Node):
         self._mapping_control_pub.publish(String(data="RESET"))
 
     def clear_markers(self) -> None:
-        """Clear camera-derived map markers without resetting SLAM."""
+        """Clear manual markers and the current session semantic database."""
         self._obstacle_marks.clear()
-        self.get_logger().info("All camera obstacle markers cleared")
+        self._semantic_control_pub.publish(String(data="CLEAR"))
+        self.get_logger().info("All manual and semantic object markers cleared")
 
     def mark_obstacle(
         self,

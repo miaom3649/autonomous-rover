@@ -10,6 +10,7 @@ mapping_monitor_node:
     healthy_samples_to_recover: 4
     recovery_timeout_s: 5.0
     checkpoint_period_s: 15.0
+    mapping_start_timeout_s: 20.0
     session_root: "/home/konkon/dev/autonomous-rover/mapping_sessions"
     slam_params_file: "/home/konkon/dev/autonomous-rover/config/slam_toolbox_params.yaml"
     slam_localization_params_file: "/home/konkon/dev/autonomous-rover/config/slam_toolbox_localization_params.yaml"

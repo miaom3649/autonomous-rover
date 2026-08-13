@@ -16,3 +16,11 @@ def test_stale_candidate_is_deleted(tmp_path):
     store.observe("chair", 0, 0, 0.5, False, 1.0)
     store.expire_candidates(now=40.0, ttl_s=30.0)
     assert store.all() == []
+
+
+def test_clear_removes_objects_and_resets_ids(tmp_path):
+    store = SemanticStore(str(tmp_path / "objects.db"))
+    store.observe("chair", 0, 0, 0.9, True, 1.0)
+    store.clear()
+    assert store.all() == []
+    assert store.observe("chair", 1, 1, 0.9, True, 2.0)["id"] == 1
