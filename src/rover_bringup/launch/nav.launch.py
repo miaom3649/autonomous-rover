@@ -100,7 +100,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="rover_navigation",
                 executable="mapping_monitor_node",
                 name="mapping_monitor_node",
-                parameters=[mapping_monitor_params],
+                parameters=[mapping_monitor_params, {"slam_params_file": slam_toolbox_params}],
             ),
             Node(
                 package="rover_navigation",
@@ -141,20 +141,10 @@ def generate_launch_description() -> LaunchDescription:
                 arguments=["--ros-args", "--log-level", "error"],
                 output="screen",
             ),
-            # ── slam_toolbox (mapping mode, pure scan-matching — no wheel odometry) ──
-            # respawn=True: slam_toolbox has no "clear map" service, so dashboard_node's
-            # reset-map button resets by killing this process outright — launch then
-            # restarts it fresh (map_file_name is "" in slam_toolbox_params.yaml, so a
-            # fresh process always starts from a blank map).
-            Node(
-                package="slam_toolbox",
-                executable="async_slam_toolbox_node",
-                name="slam_toolbox",
-                parameters=[slam_toolbox_params],
-                output="screen",
-                respawn=True,
-                respawn_delay=1.0,
-            ),
+            # slam_toolbox is started and switched between mapping/localization
+            # modes by mapping_monitor_node. It must not be independently
+            # respawned here, otherwise the mapping process would come back while
+            # the fixed-map localization process is running.
             # ── TF: base_link -> laser_frame, static (measure once mounted) ──
             Node(
                 package="tf2_ros",

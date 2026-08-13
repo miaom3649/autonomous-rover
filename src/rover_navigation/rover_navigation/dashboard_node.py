@@ -16,10 +16,8 @@ http://raspberrypi.local:8082 in a browser. Shows a 1x2 grid:
     a static identity — this rover has no wheel encoders)
 
 The page also has interactive controls:
-  - "Reset map": slam_toolbox has no built-in "clear the map and start over"
-    service, so this works by killing the async_slam_toolbox_node process
-    outright — nav.launch.py runs it with respawn=True, so launch
-    immediately restarts it with a fresh, blank map.
+  - "Reset map": asks mapping_monitor_node to replace the current
+    slam_toolbox process with a fresh mapping instance.
   - Click the map panel to set a goal: fires a ComputePathToPose action
     (preview only, doesn't drive) — its result path is published to /plan
     as a side effect by planner_server regardless of who calls it, so the
@@ -44,7 +42,6 @@ The page also has interactive controls:
 import json
 import math
 from pathlib import Path as FilePath
-import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -136,14 +133,13 @@ _INDEX_HTML = """<!doctype html>
   <div id="stateCards"><div id="navCard" class="stateCard">NAV: —</div>
     <div id="mappingCard" class="stateCard">MAPPING: IDLE</div></div>
   <div id="toolbar">
-    <button id="resetBtn">Reset map</button>
+    <button id="resetBtn">Reset all</button>
     <button id="clearMarkersBtn">Clear markers</button>
     <button id="moveBtn">Move</button>
     <button id="clearBtn">Clear goal</button>
     <button id="traceToggleBtn">Hide trace</button>
     <button id="mappingStartBtn">Start mapping</button>
     <button id="mappingFinishBtn">Finish mapping</button>
-    <button id="workModeBtn">Enter work mode</button>
     <button id="mappingResumeBtn">Resume checkpoint</button>
     <input id="semanticClass" value="chair" size="10"><button id="semanticGoBtn">Go to nearest</button>
     <a href="/mapping_log" style="color:#8cf">Download mapping log</a>
@@ -190,7 +186,7 @@ _INDEX_HTML = """<!doctype html>
     }
 
     document.getElementById('resetBtn').onclick = async () => {
-      flash((await post('/reset')) ? 'map reset' : 'failed');
+      flash((await post('/reset')) ? 'all state reset' : 'failed');
     };
     document.getElementById('clearMarkersBtn').onclick = async () => {
       flash((await post('/markers/clear')) ? 'markers cleared' : 'failed');
@@ -211,10 +207,7 @@ _INDEX_HTML = """<!doctype html>
       flash((await post('/mapping/start')) ? 'mapping started' : 'failed');
     };
     document.getElementById('mappingFinishBtn').onclick = async () => {
-      flash((await post('/mapping/finish')) ? 'mapping saved' : 'failed');
-    };
-    document.getElementById('workModeBtn').onclick = async () => {
-      flash((await post('/mapping/work')) ? 'work mode enabled' : 'finish mapping first');
+      flash((await post('/mapping/finish')) ? 'saving map...' : 'failed');
     };
     document.getElementById('mappingResumeBtn').onclick = async () => {
       flash((await post('/mapping/resume')) ? 'relocalizing checkpoint' : 'failed');
@@ -311,7 +304,7 @@ _INDEX_HTML = """<!doctype html>
       if (text.includes('FAIL') || text.includes('INVALID') || text.includes('ABORT')) return 'bad';
       if (text.includes('RECOVER') || text.includes('RETURN') || text.includes('BLOCK')) return 'warn';
       if (text.includes('REACHED') || text === 'WORKING' || text === 'MAPPING') return 'good';
-      return kind === 'mapping' && text === 'MAP_READY' ? 'info' : '';
+      return kind === 'mapping' && text === 'SAVING_MAP' ? 'info' : '';
     }
     async function pollNavStatus() {
       try {
@@ -602,9 +595,8 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         "/obstacle/mark": lambda node, body: node.mark_obstacle(
             float(body.get("u_fraction", -1.0)), float(body.get("v_fraction", -1.0))
         ),
-        "/mapping/start": lambda node, body: node.mapping_command("START"),
+        "/mapping/start": lambda node, body: node.start_mapping(),
         "/mapping/finish": lambda node, body: node.mapping_command("FINISH"),
-        "/mapping/work": lambda node, body: node.mapping_command("WORK"),
         "/mapping/resume": lambda node, body: node.mapping_command("RESUME"),
         "/semantic/go": lambda node, body: node.semantic_goal(str(body.get("class", "chair"))),
     }
@@ -841,9 +833,21 @@ class DashboardNode(Node):
             self._mapping_status = {"state": "UNKNOWN", "detail": msg.data}
 
     def mapping_command(self, command: str) -> None:
-        if command == "WORK" and self._mapping_status.get("state") != "MAP_READY":
-            raise ValueError("finish and save the map before entering work mode")
+        if command == "FINISH" and self._mapping_status.get("state") != "MAPPING":
+            raise ValueError("mapping is not currently running")
         self._mapping_control_pub.publish(String(data=command))
+
+    def start_mapping(self) -> None:
+        self._clear_runtime_display()
+        self._mapping_control_pub.publish(String(data="START"))
+
+    def _clear_runtime_display(self) -> None:
+        self._occupancy_grid = None
+        self._obstacle_marks.clear()
+        self._detections = []
+        self._trace_suppressed = True
+        self.clear_goal()
+        self._publish_mode("MANUAL")
 
     def semantic_goal(self, label: str) -> None:
         if not label.strip():
@@ -918,12 +922,10 @@ class DashboardNode(Node):
             self.get_logger().warn(f"Rejected semantic objects: {exc}")
 
     def reset_map(self) -> None:
-        """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
-        self.get_logger().warn("Reset map requested — restarting slam_toolbox")
-        self._occupancy_grid = None
-        self._obstacle_marks.clear()
-        self._trace_suppressed = True
-        subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
+        """Restore the complete rover mapping/navigation UI to startup state."""
+        self.get_logger().warn("Reset all requested — returning to startup state")
+        self._clear_runtime_display()
+        self._mapping_control_pub.publish(String(data="RESET"))
 
     def clear_markers(self) -> None:
         """Clear camera-derived map markers without resetting SLAM."""

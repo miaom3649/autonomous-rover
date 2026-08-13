@@ -35,6 +35,7 @@ class MappingMonitorNode(Node):
         ):
             self.declare_parameter(name, default)
         self.declare_parameter("session_root", "mapping_sessions")
+        self.declare_parameter("slam_params_file", "")
 
         self._thresholds = HealthThresholds(
             pose_jump_m=float(self.get_parameter("pose_jump_m").value),
@@ -54,6 +55,11 @@ class MappingMonitorNode(Node):
         self._last_checkpoint = 0.0
         self._session_dir: Path | None = None
         self._summary: dict = {}
+        self._slam_process: subprocess.Popen | None = None
+        self._slam_mode = "stopped"
+        self._slam_command: list[str] | None = None
+        self._slam_log_path: Path | None = None
+        self._finish_pose: tuple[float, float, float] | None = None
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -63,7 +69,9 @@ class MappingMonitorNode(Node):
         self.create_subscription(OccupancyGrid, "/map", self._on_map, qos_profile_sensor_data)
         self.create_subscription(String, "/rover/mapping_control", self._on_control, 10)
         self.create_timer(float(self.get_parameter("sample_period_s").value), self._sample)
-        self._publish_status("monitor ready")
+        self.create_timer(2.0, self._ensure_slam_running)
+        self.create_timer(0.5, self._complete_map_save)
+        self._publish_status("no map; click Start mapping")
 
     def _on_scan(self, msg: LaserScan) -> None:
         self._scan, self._scan_time = msg, time.monotonic()
@@ -75,24 +83,32 @@ class MappingMonitorNode(Node):
         command = msg.data.strip().upper()
         if command == "START":
             self._start_session()
+        elif command == "RESET":
+            self._reset_to_startup()
         elif command == "FINISH" and self._state == "MAPPING":
             self._record_event("MAPPING_FINISHED", [], "session saved")
+            self._finish_pose = self._pose()
+            if self._finish_pose is None:
+                self._publish_status("cannot finish without a valid map pose")
+                return
             if self._session_dir:
+                final_base = str(self._session_dir / "final_posegraph")
+                subprocess.Popen(
+                    ["ros2", "service", "call", "/slam_toolbox/serialize_map",
+                     "slam_toolbox/srv/SerializePoseGraph", f"{{filename: '{final_base}'}}"],
+                    stdout=(self._session_dir / "final_serialize.log").open("a"),
+                    stderr=subprocess.STDOUT,
+                )
                 subprocess.Popen(
                     ["ros2", "run", "nav2_map_server", "map_saver_cli", "-f",
                      str(self._session_dir / "final_map")],
                     stdout=(self._session_dir / "final_save.log").open("a"),
                     stderr=subprocess.STDOUT,
                 )
-            self._state = "MAP_READY"
-            self._set_lock(False)
+            self._state = "SAVING_MAP"
+            self._set_lock(True)
             self._flush_summary()
-            self._publish_status("map saved; waiting to enter work mode")
-        elif command == "WORK" and self._state == "MAP_READY":
-            self._state = "WORKING"
-            self._set_lock(False)
-            self._record_event("WORK_MODE_STARTED", [], "semantic mapping enabled")
-            self._publish_status("work mode; semantic mapping enabled")
+            self._publish_status("saving final map; localization will start automatically")
         elif command == "ABORT" and self._state != "IDLE":
             self._record_event("MAPPING_ABORTED_BY_USER", [], "session aborted")
             self._state = "INVALID"
@@ -103,12 +119,15 @@ class MappingMonitorNode(Node):
             self._resume_checkpoint()
 
     def _start_session(self) -> None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self._reset_runtime_state()
+        self._stop_slam()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         root = Path(str(self.get_parameter("session_root").value)).expanduser()
         self._session_dir = root / f"session_{stamp}"
         self._session_dir.mkdir(parents=True, exist_ok=False)
         self._summary = {"session_id": self._session_dir.name, "map_id": self._session_dir.name,
                          "started_at": datetime.now(timezone.utc).isoformat(), "points": []}
+        self._start_slam("mapping", restart=True)
         self._state, self._previous = "MAPPING", None
         self._failure_count = self._healthy_count = 0
         self._last_checkpoint = time.monotonic() - float(
@@ -118,10 +137,47 @@ class MappingMonitorNode(Node):
         self._record_event("MAPPING_STARTED", [], "monitoring enabled")
         self._publish_status("mapping started")
 
+    def _complete_map_save(self) -> None:
+        if self._state != "SAVING_MAP" or not self._session_dir:
+            return
+        if not (self._session_dir / "final_posegraph.posegraph").exists():
+            return
+        if self._finish_pose is None:
+            return
+        self._start_slam(
+            "localization", pose=self._finish_pose,
+            posegraph=str(self._session_dir / "final_posegraph"), restart=True,
+        )
+        self._state = "WORKING"
+        self._set_lock(False)
+        self._record_event("WORK_MODE_STARTED", [],
+                           "fixed-map localization and semantic mapping enabled")
+        self._publish_status("working; fixed-map localization enabled")
+
+    def _reset_runtime_state(self) -> None:
+        self._previous = None
+        self._failure_count = self._healthy_count = 0
+        self._recovery_started = self._last_checkpoint = 0.0
+        self._scan = None
+        self._scan_time = self._map_time = 0.0
+        self._finish_pose = None
+
+    def _reset_to_startup(self) -> None:
+        if self._session_dir:
+            self._record_event("RESET_TO_STARTUP", [], "all runtime state cleared")
+        self._stop_slam()
+        self._reset_runtime_state()
+        self._state = "IDLE"
+        self._session_dir = None
+        self._summary = {}
+        self._set_lock(False)
+        self._publish_status("no map; click Start mapping")
+
     def _resume_checkpoint(self) -> None:
         if not self._session_dir or not (self._session_dir / "checkpoint.json").exists():
             raise ValueError("no trusted checkpoint is available")
         checkpoint = json.loads((self._session_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        self._start_slam("mapping", restart=self._slam_mode != "mapping")
         base = str(self._session_dir / checkpoint["posegraph_base"])
         pose = checkpoint
         # Humble DeserializePoseGraph: 2 = START_AT_GIVEN_POSE. The operator
@@ -142,6 +198,67 @@ class MappingMonitorNode(Node):
         self._set_lock(True)
         self._record_event("CHECKPOINT_RELOAD_REQUESTED", [], "relocalizing at trusted pose")
         self._publish_status("checkpoint reload requested")
+
+    def _start_slam(self, mode: str, *, pose=None, posegraph: str | None = None,
+                    restart: bool = False) -> None:
+        if self._slam_process is not None and self._slam_process.poll() is None:
+            if not restart and self._slam_mode == mode:
+                return
+            self._slam_process.terminate()
+            try:
+                self._slam_process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self._slam_process.kill()
+                self._slam_process.wait(timeout=2.0)
+        params = str(self.get_parameter("slam_params_file").value)
+        executable = ("async_slam_toolbox_node" if mode == "mapping"
+                      else "localization_slam_toolbox_node")
+        command = ["ros2", "run", "slam_toolbox", executable, "--ros-args",
+                   "--params-file", params]
+        if mode == "localization":
+            if pose is None or not posegraph:
+                raise ValueError("localization requires a pose and serialized pose graph")
+            command.extend([
+                "-p", f"map_file_name:={posegraph}",
+                "-p", "map_start_at_dock:=false",
+                "-p", f"map_start_pose:=[{pose[0]},{pose[1]},{math.radians(pose[2])}]",
+            ])
+        log_path = ((self._session_dir / f"slam_{mode}.log") if self._session_dir
+                    else Path(f"/tmp/rover_slam_{mode}.log"))
+        self._slam_process = subprocess.Popen(
+            command, stdout=log_path.open("a"), stderr=subprocess.STDOUT
+        )
+        self._slam_mode = mode
+        self._slam_command = command
+        self._slam_log_path = log_path
+
+    def _stop_slam(self) -> None:
+        if self._slam_process is not None and self._slam_process.poll() is None:
+            self._slam_process.terminate()
+            try:
+                self._slam_process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self._slam_process.kill()
+                self._slam_process.wait(timeout=2.0)
+        self._slam_process = None
+        self._slam_mode = "stopped"
+        self._slam_command = None
+        self._slam_log_path = None
+
+    def _ensure_slam_running(self) -> None:
+        if (self._slam_process is not None and self._slam_process.poll() is not None
+                and self._slam_command is not None and self._slam_log_path is not None):
+            self.get_logger().error(
+                f"slam_toolbox {self._slam_mode} process exited; restarting it"
+            )
+            self._slam_process = subprocess.Popen(
+                self._slam_command, stdout=self._slam_log_path.open("a"),
+                stderr=subprocess.STDOUT,
+            )
+
+    def destroy_node(self) -> None:
+        self._stop_slam()
+        super().destroy_node()
 
     def _pose(self) -> tuple[float, float, float] | None:
         try:
