@@ -75,7 +75,7 @@ class MappingMonitorNode(Node):
         command = msg.data.strip().upper()
         if command == "START":
             self._start_session()
-        elif command == "FINISH" and self._state != "IDLE":
+        elif command == "FINISH" and self._state == "MAPPING":
             self._record_event("MAPPING_FINISHED", [], "session saved")
             if self._session_dir:
                 subprocess.Popen(
@@ -84,21 +84,21 @@ class MappingMonitorNode(Node):
                     stdout=(self._session_dir / "final_save.log").open("a"),
                     stderr=subprocess.STDOUT,
                 )
-            self._state = "IDLE"
+            self._state = "MAP_READY"
             self._set_lock(False)
             self._flush_summary()
-            self._publish_status("mapping finished")
+            self._publish_status("map saved; waiting to enter work mode")
+        elif command == "WORK" and self._state == "MAP_READY":
+            self._state = "WORKING"
+            self._set_lock(False)
+            self._record_event("WORK_MODE_STARTED", [], "semantic mapping enabled")
+            self._publish_status("work mode; semantic mapping enabled")
         elif command == "ABORT" and self._state != "IDLE":
             self._record_event("MAPPING_ABORTED_BY_USER", [], "session aborted")
             self._state = "INVALID"
             self._set_lock(True)
             self._flush_summary()
             self._publish_status("mapping aborted")
-        elif command == "RETURN" and self._state in ("INVALID", "RECOVERY_FAILED"):
-            self._state = "RETURN_TO_CHECKPOINT"
-            self._set_lock(False)
-            self._record_event("RETURN_TO_CHECKPOINT", [], "manual driving enabled")
-            self._publish_status("return manually; current map is invalid")
         elif command == "RESUME" and self._state == "RETURN_TO_CHECKPOINT":
             self._resume_checkpoint()
 
@@ -198,10 +198,10 @@ class MappingMonitorNode(Node):
             elif now - self._recovery_started >= float(
                 self.get_parameter("recovery_timeout_s").value
             ):
-                self._state = "RECOVERY_FAILED"
-                self._set_lock(True)
+                self._state = "RETURN_TO_CHECKPOINT"
+                self._set_lock(False)
                 self._record_event("RECOVERY_TIMEOUT", reasons,
-                                   "mapping invalid; request manual return")
+                                   "mapping invalid; manual return enabled automatically")
 
         if self._state == "MAPPING" and not reasons and now - self._last_checkpoint >= float(
             self.get_parameter("checkpoint_period_s").value

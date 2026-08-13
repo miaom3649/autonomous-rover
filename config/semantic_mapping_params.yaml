@@ -22,7 +22,6 @@ object_localizer_node:
 
 semantic_mapper_node:
   ros__parameters:
-    database_path: "/home/konkon/dev/autonomous-rover/mapping_sessions/semantic_objects.sqlite3"
     confirm_observations: 3
     association_radius_m: 0.35
 

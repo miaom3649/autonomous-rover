@@ -43,7 +43,7 @@ The page also has interactive controls:
 
 import json
 import math
-from pathlib import Path
+from pathlib import Path as FilePath
 import subprocess
 import threading
 import time
@@ -83,35 +83,43 @@ _INDEX_HTML = """<!doctype html>
 <title>Rover Dashboard</title>
 <style>
   * { box-sizing:border-box; }
-  html, body { margin:0; width:100%; min-height:100%; background:#111; color:#eee;
-               font-family:sans-serif; user-select:none; overflow-x:hidden; }
-  button, input { font-size:clamp(13px, 1.4vw, 16px); padding:6px 12px; max-width:100%; }
-  #toolbar { padding:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; width:100%; }
-  #hint { padding:0 8px 4px; font-size:13px; color:#999; }
-  #driveArea { display:flex; align-items:center; justify-content:center; gap:18px; flex-wrap:wrap; }
+  html, body { margin:0; width:100%; height:100%; background:#111; color:#eee;
+               font-family:sans-serif; user-select:none; overflow:hidden; }
+  body { display:grid; grid-template-rows:auto auto minmax(0, 1fr); }
+  button, input { font-size:clamp(11px, 1.1vw, 15px); padding:5px 9px; max-width:100%; }
+  #toolbar { padding:5px; display:flex; gap:4px; flex-wrap:wrap; align-items:center;
+             width:100%; }
+  #hint { padding:2px 5px; font-size:clamp(10px, 1vw, 13px); color:#999; }
+  #content { min-height:0; width:100%; display:grid; grid-template-columns:minmax(0, 2fr) minmax(240px, 1fr); gap:5px; padding:0 5px 5px; }
+  #mapSection, #cameraSection { min-width:0; min-height:0; display:grid; overflow:hidden; }
+  #mapSection { grid-template-rows:auto minmax(0, 1fr); }
+  #cameraSection { grid-template-rows:auto minmax(0, 1fr) auto; border-left:1px solid #333; }
+  #driveArea { display:flex; align-items:center; justify-content:center; gap:10px; min-height:0; }
   #dpad {
-    padding:8px; display:grid; gap:4px; justify-content:center;
-    grid-template-columns:56px 56px 56px; grid-template-rows:56px 56px 56px;
+    padding:4px; display:grid; gap:3px; justify-content:center;
+    grid-template-columns:clamp(34px, 4vw, 48px) clamp(34px, 4vw, 48px) clamp(34px, 4vw, 48px);
+    grid-template-rows:clamp(34px, 4vw, 48px) clamp(34px, 4vw, 48px) clamp(34px, 4vw, 48px);
   }
-  #dpad button { font-size:20px; padding:0; }
+  #dpad button { font-size:clamp(14px, 1.5vw, 19px); padding:0; }
   #navStatus {
     padding:6px 12px; font-size:14px; background:#333; border-bottom:1px solid #000;
   }
   #navStatus.obstacle { background:#5a1a1a; color:#ffb3b3; }
-  #mapWrap { position:relative; width:100vw; max-width:100%; }
-  #stream { width:100%; height:auto; max-height:calc(100vh - 150px); object-fit:contain;
-            display:block; background:#000; }
+  #mapWrap { position:relative; width:100%; height:100%; min-height:0; overflow:hidden; }
+  #stream { width:100%; height:100%; object-fit:fill; display:block; background:#000; }
   #traceCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
   #tooltip { position:fixed; display:none; background:#222; border:1px solid #aaa;
              padding:7px; white-space:pre; font-size:12px; pointer-events:none; z-index:5; }
-  #camera { width:min(100%, 640px); height:auto; max-height:55vh; object-fit:contain;
+  #camera { width:100%; height:100%; min-height:0; object-fit:contain;
             display:block; margin:auto; background:#000; }
   #keyState { min-width:155px; color:#aaa; font-family:monospace; text-align:center; }
   @media (max-width:700px) {
-    #toolbar { padding:5px; gap:4px; }
-    button, input { padding:7px 9px; }
-    #navStatus { font-size:12px; }
-    #stream { max-height:60vh; }
+    #content { grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:2px; padding:0 2px 2px; }
+    #toolbar { padding:3px; gap:2px; }
+    button, input { padding:4px 6px; }
+    #navStatus { padding:4px 6px; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #driveArea { gap:2px; flex-direction:column; }
+    #keyState { font-size:10px; min-width:0; }
   }
 </style>
 </head>
@@ -125,25 +133,31 @@ _INDEX_HTML = """<!doctype html>
     <button id="modeBtn">Toggle mode</button>
     <button id="mappingStartBtn">Start mapping</button>
     <button id="mappingFinishBtn">Finish mapping</button>
-    <button id="mappingReturnBtn">Return to checkpoint</button>
+    <button id="workModeBtn">Enter work mode</button>
     <button id="mappingResumeBtn">Resume checkpoint</button>
     <input id="semanticClass" value="chair" size="10"><button id="semanticGoBtn">Go to nearest</button>
     <a href="/mapping_log" style="color:#8cf">Download mapping log</a>
     <span id="status"></span>
   </div>
-  <div id="hint">Click the map panel (right half) to set a goal</div>
-  <div id="mapWrap"><img id="stream" src="/stream">
-    <canvas id="traceCanvas"></canvas></div><div id="tooltip"></div>
-  <div id="hint">Click where an obstacle touches the ground to mark it on the map</div>
-  <img id="camera" src="/camera_stream">
-  <div id="driveArea">
-    <div id="dpad">
-      <div></div><button class="drive" data-dir="up">W</button><div></div>
-      <button class="drive" data-dir="left">A</button><div></div>
-      <button class="drive" data-dir="right">D</button>
-      <div></div><button class="drive" data-dir="down">S</button><div></div>
-    </div>
-    <div id="keyState">WASD: stopped</div>
+  <div id="content">
+    <section id="mapSection">
+      <div id="hint">Map: click its right half to set a goal</div>
+      <div id="mapWrap"><img id="stream" src="/stream"><canvas id="traceCanvas"></canvas></div>
+    </section>
+    <section id="cameraSection">
+      <div id="hint">Camera: click an obstacle ground-contact point</div>
+      <img id="camera" src="/camera_stream">
+      <div id="driveArea">
+        <div id="dpad">
+          <div></div><button class="drive" data-dir="up">W</button><div></div>
+          <button class="drive" data-dir="left">A</button><div></div>
+          <button class="drive" data-dir="right">D</button>
+          <div></div><button class="drive" data-dir="down">S</button><div></div>
+        </div>
+        <div id="keyState">WASD: stopped</div>
+      </div>
+    </section>
+    <div id="tooltip"></div>
   </div>
   <script>
     const status = document.getElementById('status');
@@ -186,8 +200,8 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('mappingFinishBtn').onclick = async () => {
       flash((await post('/mapping/finish')) ? 'mapping saved' : 'failed');
     };
-    document.getElementById('mappingReturnBtn').onclick = async () => {
-      flash((await post('/mapping/return')) ? 'manual return enabled' : 'failed');
+    document.getElementById('workModeBtn').onclick = async () => {
+      flash((await post('/mapping/work')) ? 'work mode enabled' : 'finish mapping first');
     };
     document.getElementById('mappingResumeBtn').onclick = async () => {
       flash((await post('/mapping/resume')) ? 'relocalizing checkpoint' : 'failed');
@@ -541,7 +555,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         ),
         "/mapping/start": lambda node, body: node.mapping_command("START"),
         "/mapping/finish": lambda node, body: node.mapping_command("FINISH"),
-        "/mapping/return": lambda node, body: node.mapping_command("RETURN"),
+        "/mapping/work": lambda node, body: node.mapping_command("WORK"),
         "/mapping/resume": lambda node, body: node.mapping_command("RESUME"),
         "/semantic/go": lambda node, body: node.semantic_goal(str(body.get("class", "chair"))),
     }
@@ -772,6 +786,8 @@ class DashboardNode(Node):
             self._mapping_status = {"state": "UNKNOWN", "detail": msg.data}
 
     def mapping_command(self, command: str) -> None:
+        if command == "WORK" and self._mapping_status.get("state") != "MAP_READY":
+            raise ValueError("finish and save the map before entering work mode")
         self._mapping_control_pub.publish(String(data=command))
 
     def semantic_goal(self, label: str) -> None:
@@ -787,7 +803,7 @@ class DashboardNode(Node):
         if grid is None or not session_dir:
             return {"status": self._mapping_status, "points": []}
         try:
-            summary = json.loads((Path(session_dir) / "summary.json").read_text(encoding="utf-8"))
+            summary = json.loads((FilePath(session_dir) / "summary.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {"status": self._mapping_status, "points": []}
         points = []
@@ -810,11 +826,11 @@ class DashboardNode(Node):
                            "radius": 6 if event != "HEALTH_SAMPLE" else 3, "tooltip": tooltip})
         return {"status": self._mapping_status, "points": points}
 
-    def latest_session_dir(self) -> Path | None:
+    def latest_session_dir(self) -> FilePath | None:
         active = self._mapping_status.get("session_dir")
         if active:
-            return Path(active)
-        root = Path(str(self.get_parameter("mapping_session_root").value)).expanduser()
+            return FilePath(active)
+        root = FilePath(str(self.get_parameter("mapping_session_root").value)).expanduser()
         sessions = sorted(root.glob("session_*/summary.json"), reverse=True)
         return sessions[0].parent if sessions else None
 
