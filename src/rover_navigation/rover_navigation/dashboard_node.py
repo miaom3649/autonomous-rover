@@ -750,6 +750,7 @@ class DashboardNode(Node):
         self._scan: LaserScan | None = None
         self._occupancy_grid: OccupancyGrid | None = None
         self._map_display_locked = False
+        self._accept_map_updates = False
         self._nav_path: Path | None = None
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
@@ -842,7 +843,7 @@ class DashboardNode(Node):
         # republish OccupancyGrids with slightly different bounds/origins.
         # Re-fitting each one makes the fixed map appear to wobble. Keep the
         # final mapping grid as the display background in work mode.
-        if not self._map_display_locked:
+        if self._accept_map_updates and not self._map_display_locked:
             self._occupancy_grid = msg
 
     def _on_mode(self, msg: String) -> None:
@@ -862,6 +863,12 @@ class DashboardNode(Node):
         try:
             self._mapping_status = json.loads(msg.data)
             state = self._mapping_status.get("state")
+            self._accept_map_updates = state in (
+                "STARTING_MAPPING", "MAPPING", "SAVING_MAP", "LOCALIZING", "WORKING"
+            )
+            if state == "IDLE":
+                self._occupancy_grid = None
+                self._map_display_locked = False
             if state in ("SAVING_MAP", "LOCALIZING", "WORKING"):
                 self._map_display_locked = self._occupancy_grid is not None
             session_id = self._mapping_status.get("session_id")
@@ -880,9 +887,11 @@ class DashboardNode(Node):
 
     def start_mapping(self) -> None:
         self._clear_runtime_display()
+        self._accept_map_updates = True
         self._mapping_control_pub.publish(String(data="START"))
 
     def _clear_runtime_display(self) -> None:
+        self._accept_map_updates = False
         self._map_display_locked = False
         self._occupancy_grid = None
         self._obstacle_marks.clear()
