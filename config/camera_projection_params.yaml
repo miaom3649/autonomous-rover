@@ -14,3 +14,4 @@ dashboard_node:
     camera_pitch_down_deg: 2.5
     camera_yaw_left_deg: -1.8
     automatic_marker_ttl_s: 3.0
+    mapping_session_root: "/home/konkon/dev/autonomous-rover/mapping_sessions"

@@ -62,13 +62,18 @@ class ObjectDetectorNode(Node):
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             elif message.encoding != "bgr8":
                 raise ValueError(f"unsupported encoding: {message.encoding}")
-            threading.Thread(target=self._request, args=(frame.copy(),), daemon=True).start()
+            stamp_ns = int(message.header.stamp.sec) * 1_000_000_000 + int(
+                message.header.stamp.nanosec
+            )
+            threading.Thread(
+                target=self._request, args=(frame.copy(), stamp_ns), daemon=True
+            ).start()
         except Exception as exc:
             with self._lock:
                 self._busy = False
             self.get_logger().warn(f"Could not prepare detector frame: {exc}")
 
-    def _request(self, frame: np.ndarray) -> None:
+    def _request(self, frame: np.ndarray, stamp_ns: int) -> None:
         try:
             ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
@@ -84,6 +89,7 @@ class ObjectDetectorNode(Node):
             detections = payload["detections"]
             for detection in detections:
                 detection["project_to_ground"] = detection["label"] in self._ground_labels
+                detection["image_stamp_ns"] = stamp_ns
             self._publisher.publish(String(data=json.dumps(detections)))
         except Exception as exc:
             self.get_logger().warn(f"Object detection request failed: {exc}")

@@ -25,6 +25,12 @@ def generate_launch_description() -> LaunchDescription:
     object_detection_params = os.path.join(
         home, "dev", "autonomous-rover", "config", "object_detection_params.yaml"
     )
+    mapping_monitor_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "mapping_monitor_params.yaml"
+    )
+    semantic_mapping_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "semantic_mapping_params.yaml"
+    )
 
     return LaunchDescription(
         [
@@ -89,6 +95,30 @@ def generate_launch_description() -> LaunchDescription:
                 executable="object_detector_node",
                 name="object_detector_node",
                 parameters=[object_detection_params],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="mapping_monitor_node",
+                name="mapping_monitor_node",
+                parameters=[mapping_monitor_params],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="object_localizer_node",
+                name="object_localizer_node",
+                parameters=[semantic_mapping_params],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="semantic_mapper_node",
+                name="semantic_mapper_node",
+                parameters=[semantic_mapping_params],
+            ),
+            Node(
+                package="rover_navigation",
+                executable="semantic_navigation_node",
+                name="semantic_navigation_node",
+                parameters=[semantic_mapping_params],
             ),
             # ── Lidar (YDLidar X3, primary localization/mapping sensor) ──
             Node(
