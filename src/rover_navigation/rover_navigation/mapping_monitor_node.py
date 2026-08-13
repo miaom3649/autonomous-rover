@@ -2,7 +2,9 @@
 
 import json
 import math
+import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -127,6 +129,7 @@ class MappingMonitorNode(Node):
     def _start_session(self) -> None:
         self._reset_runtime_state()
         self._stop_slam()
+        self._stop_orphaned_slam()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         root = Path(str(self.get_parameter("session_root").value)).expanduser()
         self._session_dir = root / f"session_{stamp}"
@@ -225,6 +228,7 @@ class MappingMonitorNode(Node):
         if self._session_dir:
             self._record_event("RESET_TO_STARTUP", [], "all runtime state cleared")
         self._stop_slam()
+        self._stop_orphaned_slam()
         self._reset_runtime_state()
         self._state = "IDLE"
         self._session_dir = None
@@ -287,7 +291,8 @@ class MappingMonitorNode(Node):
         log_path = ((self._session_dir / f"slam_{mode}.log") if self._session_dir
                     else Path(f"/tmp/rover_slam_{mode}.log"))
         self._slam_process = subprocess.Popen(
-            command, stdout=log_path.open("a"), stderr=subprocess.STDOUT
+            command, stdout=log_path.open("a"), stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         self._slam_mode = mode
         self._slam_command = command
@@ -295,16 +300,32 @@ class MappingMonitorNode(Node):
 
     def _stop_slam(self) -> None:
         if self._slam_process is not None and self._slam_process.poll() is None:
-            self._slam_process.terminate()
+            # ros2 run may spawn/exec the actual node. Kill the entire process
+            # group so the underlying slam_toolbox cannot survive as an orphan
+            # and keep publishing the previous map.
+            try:
+                os.killpg(os.getpgid(self._slam_process.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 self._slam_process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
-                self._slam_process.kill()
+                try:
+                    os.killpg(os.getpgid(self._slam_process.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 self._slam_process.wait(timeout=2.0)
         self._slam_process = None
         self._slam_mode = "stopped"
         self._slam_command = None
         self._slam_log_path = None
+
+    def _stop_orphaned_slam(self) -> None:
+        """Remove SLAM nodes left behind by an older monitor/run."""
+        for executable in ("async_slam_toolbox_node", "localization_slam_toolbox_node"):
+            subprocess.run(["pkill", "-TERM", "-f", executable], check=False)
+        # Give DDS/process teardown a short moment before starting a blank map.
+        time.sleep(0.5)
 
     def _ensure_slam_running(self) -> None:
         if (self._slam_process is not None and self._slam_process.poll() is not None
@@ -314,7 +335,7 @@ class MappingMonitorNode(Node):
             )
             self._slam_process = subprocess.Popen(
                 self._slam_command, stdout=self._slam_log_path.open("a"),
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.STDOUT, start_new_session=True,
             )
 
     def destroy_node(self) -> None:
