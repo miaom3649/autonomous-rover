@@ -86,6 +86,11 @@ def generate_launch_description() -> LaunchDescription:
                 executable="drive_node",
                 name="drive_node",
                 parameters=[base_params, {"use_sim": use_sim}],
+                # Losing this node leaves every controller apparently working
+                # while no process remains to actuate the motors. Recover from
+                # an isolated SIGKILL/crash and reinitialize the motor driver.
+                respawn=True,
+                respawn_delay=2.0,
             ),
             Node(
                 package="rover_base",

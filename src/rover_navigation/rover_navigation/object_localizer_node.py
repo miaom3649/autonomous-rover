@@ -29,16 +29,26 @@ class ObjectLocalizerNode(Node):
         }
         for name, default in defaults.items(): self.declare_parameter(name, default)
         self._scans = deque(maxlen=30)
+        self._enabled = False
         self._tf = Buffer(); self._listener = TransformListener(self._tf, self)
         self._publisher = self.create_publisher(String, "/rover/localized_objects", 10)
         self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
         self.create_subscription(String, "/rover/object_detections", self._on_detections, 10)
+        self.create_subscription(String, "/rover/mapping_status", self._on_mapping_status, 10)
 
     def _on_scan(self, scan):
         stamp_ns = int(scan.header.stamp.sec)*1_000_000_000 + int(scan.header.stamp.nanosec)
         self._scans.append((stamp_ns, scan))
 
+    def _on_mapping_status(self, message):
+        try:
+            self._enabled = json.loads(message.data).get("state") == "WORKING"
+        except ValueError:
+            self._enabled = False
+
     def _on_detections(self, message):
+        if not self._enabled:
+            return
         try:
             detections = json.loads(message.data)
             stamp_ns = int(detections[0].get("image_stamp_ns", 0)) if detections else 0
