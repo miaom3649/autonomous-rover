@@ -38,10 +38,10 @@ python windows_ai_server/object_server.py
 The first run downloads the small `yolo11n.pt` model. Set `server_url` in
 `config/object_detection_params.yaml` to the Windows LAN address, for example
 `http://192.168.3.100:8766/detect`, then deploy and start navigation normally.
-The camera view shows every YOLO box. Only classes listed in `ground_labels`
-are projected from the box's bottom centre onto the map, because the flat-ground
-projection is invalid for objects resting on tables or shelves. Nearby repeated
-detections of the same class are merged into one semantic marker.
+The camera view shows every YOLO box. Every class is projected from the box's
+bottom centre toward the ground; projected positions outside the current map
+bounds are discarded. Nearby repeated detections of the same class are merged
+into one semantic marker.
 
 ---
 

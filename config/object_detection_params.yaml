@@ -3,6 +3,3 @@ object_detector_node:
     server_url: "http://192.168.3.33:8766/detect"
     rate_hz: 1.0
     timeout_s: 3.0
-    # Only classes whose bounding-box bottom normally touches the floor are
-    # projected onto the map. All detected classes are still drawn on video.
-    ground_labels: [person, chair, couch, potted plant, suitcase]

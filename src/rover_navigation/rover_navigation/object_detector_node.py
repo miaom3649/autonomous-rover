@@ -23,13 +23,9 @@ class ObjectDetectorNode(Node):
         self.declare_parameter("server_url", "")
         self.declare_parameter("rate_hz", 1.0)
         self.declare_parameter("timeout_s", 3.0)
-        self.declare_parameter(
-            "ground_labels", ["person", "chair", "couch", "potted plant", "suitcase"]
-        )
         self._url = str(self.get_parameter("server_url").value)
         self._period = 1.0 / float(self.get_parameter("rate_hz").value)
         self._timeout = float(self.get_parameter("timeout_s").value)
-        self._ground_labels = set(self.get_parameter("ground_labels").value)
         self._session = requests.Session()
         # The Pi may use an internet proxy, but the detector is a direct LAN
         # service. Never route camera frames through that proxy.
@@ -88,7 +84,9 @@ class ObjectDetectorNode(Node):
             payload = response.json()
             detections = payload["detections"]
             for detection in detections:
-                detection["project_to_ground"] = detection["label"] in self._ground_labels
+                # Every detected class is eligible for the simple ground-ray
+                # projection. object_localizer rejects results outside /map.
+                detection["project_to_ground"] = True
                 detection["image_stamp_ns"] = stamp_ns
             self._publisher.publish(String(data=json.dumps(detections)))
         except Exception as exc:

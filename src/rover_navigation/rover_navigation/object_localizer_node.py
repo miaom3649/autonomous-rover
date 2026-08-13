@@ -10,6 +10,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
@@ -30,11 +31,13 @@ class ObjectLocalizerNode(Node):
         for name, default in defaults.items(): self.declare_parameter(name, default)
         self._scans = deque(maxlen=30)
         self._enabled = False
+        self._map: OccupancyGrid | None = None
         self._tf = Buffer(); self._listener = TransformListener(self._tf, self)
         self._publisher = self.create_publisher(String, "/rover/localized_objects", 10)
         self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
         self.create_subscription(String, "/rover/object_detections", self._on_detections, 10)
         self.create_subscription(String, "/rover/mapping_status", self._on_mapping_status, 10)
+        self.create_subscription(OccupancyGrid, "/map", self._on_map, 10)
 
     def _on_scan(self, scan):
         stamp_ns = int(scan.header.stamp.sec)*1_000_000_000 + int(scan.header.stamp.nanosec)
@@ -45,6 +48,9 @@ class ObjectLocalizerNode(Node):
             self._enabled = json.loads(message.data).get("state") == "WORKING"
         except ValueError:
             self._enabled = False
+
+    def _on_map(self, message):
+        self._map = message
 
     def _on_detections(self, message):
         if not self._enabled:
@@ -64,6 +70,8 @@ class ObjectLocalizerNode(Node):
                 point, lidar = self._match_lidar(camera_point, stamp_ns)
                 x = transform.transform.translation.x + math.cos(yaw)*point[0]-math.sin(yaw)*point[1]
                 y = transform.transform.translation.y + math.sin(yaw)*point[0]+math.cos(yaw)*point[1]
+                if not self._inside_map(x, y):
+                    continue
                 output.append({"class": detection["label"], "confidence": detection["confidence"],
                     "x": x, "y": y, "camera_map_x": transform.transform.translation.x +
                     math.cos(yaw)*camera_point[0]-math.sin(yaw)*camera_point[1],
@@ -74,6 +82,16 @@ class ObjectLocalizerNode(Node):
             self._publisher.publish(String(data=json.dumps(output)))
         except Exception as exc:
             self.get_logger().warn(f"Could not localize detections: {exc}")
+
+    def _inside_map(self, x, y):
+        grid = self._map
+        if grid is None or grid.info.width == 0 or grid.info.height == 0:
+            return False
+        min_x = grid.info.origin.position.x
+        min_y = grid.info.origin.position.y
+        max_x = min_x + grid.info.width * grid.info.resolution
+        max_y = min_y + grid.info.height * grid.info.resolution
+        return min_x <= x < max_x and min_y <= y < max_y
 
     def _camera_point(self, detection):
         p = {name: float(self.get_parameter(name).value) for name in (
