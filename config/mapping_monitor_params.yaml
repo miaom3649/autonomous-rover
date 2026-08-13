@@ -1,0 +1,13 @@
+mapping_monitor_node:
+  ros__parameters:
+    sample_period_s: 0.5
+    pose_jump_m: 0.5
+    yaw_jump_deg: 35.0
+    scan_timeout_s: 1.0
+    map_timeout_s: 3.0
+    min_valid_scan_points: 30
+    failures_before_recovery: 3
+    healthy_samples_to_recover: 4
+    recovery_timeout_s: 5.0
+    checkpoint_period_s: 15.0
+    session_root: "/home/konkon/dev/autonomous-rover/mapping_sessions"

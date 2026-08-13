@@ -1,8 +1,6 @@
 object_detector_node:
   ros__parameters:
-    # Fill in the Windows machine's LAN address, for example:
-    # server_url: "http://192.168.3.100:8766/detect"
-    server_url: ""
+    server_url: "http://192.168.3.33:8766/detect"
     rate_hz: 1.0
     timeout_s: 3.0
     # Only classes whose bounding-box bottom normally touches the floor are

@@ -43,6 +43,7 @@ The page also has interactive controls:
 
 import json
 import math
+from pathlib import Path
 import subprocess
 import threading
 import time
@@ -72,7 +73,7 @@ from rover_navigation.ground_projection import pixel_to_ground
 PORT = 8082
 STALE_AFTER_S = 2.0
 # action_msgs/msg/GoalStatus terminal values
-_GOAL_STATUS_TEXT = {4: "成功到达", 5: "已取消", 6: "导航失败"}
+_GOAL_STATUS_TEXT = {4: "Goal reached", 5: "Canceled", 6: "Navigation failed"}
 PANEL_H = 480
 PANEL_W = 640
 SCAN_DISPLAY_RADIUS_M = 4.0
@@ -81,12 +82,15 @@ _INDEX_HTML = """<!doctype html>
 <head>
 <title>Rover Dashboard</title>
 <style>
-  body { margin:0; background:#111; color:#eee; font-family:sans-serif; user-select:none; }
-  button { font-size:16px; padding:6px 14px; }
-  #toolbar { padding:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; width:100%; min-height:100%; background:#111; color:#eee;
+               font-family:sans-serif; user-select:none; overflow-x:hidden; }
+  button, input { font-size:clamp(13px, 1.4vw, 16px); padding:6px 12px; max-width:100%; }
+  #toolbar { padding:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; width:100%; }
   #hint { padding:0 8px 4px; font-size:13px; color:#999; }
+  #driveArea { display:flex; align-items:center; justify-content:center; gap:18px; flex-wrap:wrap; }
   #dpad {
-    padding:12px; display:grid; gap:4px; justify-content:center;
+    padding:8px; display:grid; gap:4px; justify-content:center;
     grid-template-columns:56px 56px 56px; grid-template-rows:56px 56px 56px;
   }
   #dpad button { font-size:20px; padding:0; }
@@ -94,26 +98,52 @@ _INDEX_HTML = """<!doctype html>
     padding:6px 12px; font-size:14px; background:#333; border-bottom:1px solid #000;
   }
   #navStatus.obstacle { background:#5a1a1a; color:#ffb3b3; }
+  #mapWrap { position:relative; width:100vw; max-width:100%; }
+  #stream { width:100%; height:auto; max-height:calc(100vh - 150px); object-fit:contain;
+            display:block; background:#000; }
+  #traceCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
+  #tooltip { position:fixed; display:none; background:#222; border:1px solid #aaa;
+             padding:7px; white-space:pre; font-size:12px; pointer-events:none; z-index:5; }
+  #camera { width:min(100%, 640px); height:auto; max-height:55vh; object-fit:contain;
+            display:block; margin:auto; background:#000; }
+  #keyState { min-width:155px; color:#aaa; font-family:monospace; text-align:center; }
+  @media (max-width:700px) {
+    #toolbar { padding:5px; gap:4px; }
+    button, input { padding:7px 9px; }
+    #navStatus { font-size:12px; }
+    #stream { max-height:60vh; }
+  }
 </style>
 </head>
 <body>
   <div id="navStatus">nav: —</div>
   <div id="toolbar">
     <button id="resetBtn">Reset map</button>
+    <button id="clearMarkersBtn">Clear markers</button>
     <button id="moveBtn">Move</button>
     <button id="clearBtn">Clear goal</button>
     <button id="modeBtn">Toggle mode</button>
+    <button id="mappingStartBtn">Start mapping</button>
+    <button id="mappingFinishBtn">Finish mapping</button>
+    <button id="mappingReturnBtn">Return to checkpoint</button>
+    <button id="mappingResumeBtn">Resume checkpoint</button>
+    <input id="semanticClass" value="chair" size="10"><button id="semanticGoBtn">Go to nearest</button>
+    <a href="/mapping_log" style="color:#8cf">Download mapping log</a>
     <span id="status"></span>
   </div>
   <div id="hint">Click the map panel (right half) to set a goal</div>
-  <img id="stream" src="/stream" style="width:100%;display:block">
+  <div id="mapWrap"><img id="stream" src="/stream">
+    <canvas id="traceCanvas"></canvas></div><div id="tooltip"></div>
   <div id="hint">Click where an obstacle touches the ground to mark it on the map</div>
-  <img id="camera" src="/camera_stream" style="width:min(100%,640px);display:block;margin:auto">
-  <div id="dpad">
-    <div></div><button class="drive" data-dir="up">&#9650;</button><div></div>
-    <button class="drive" data-dir="left">&#9664;</button><div></div>
-    <button class="drive" data-dir="right">&#9654;</button>
-    <div></div><button class="drive" data-dir="down">&#9660;</button><div></div>
+  <img id="camera" src="/camera_stream">
+  <div id="driveArea">
+    <div id="dpad">
+      <div></div><button class="drive" data-dir="up">W</button><div></div>
+      <button class="drive" data-dir="left">A</button><div></div>
+      <button class="drive" data-dir="right">D</button>
+      <div></div><button class="drive" data-dir="down">S</button><div></div>
+    </div>
+    <div id="keyState">WASD: stopped</div>
   </div>
   <script>
     const status = document.getElementById('status');
@@ -138,6 +168,9 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('resetBtn').onclick = async () => {
       flash((await post('/reset')) ? 'map reset' : 'failed');
     };
+    document.getElementById('clearMarkersBtn').onclick = async () => {
+      flash((await post('/markers/clear')) ? 'markers cleared' : 'failed');
+    };
     document.getElementById('moveBtn').onclick = async () => {
       flash((await post('/goal/move')) ? 'moving...' : 'failed');
     };
@@ -147,10 +180,26 @@ _INDEX_HTML = """<!doctype html>
     document.getElementById('modeBtn').onclick = async () => {
       flash((await post('/mode/toggle')) ? 'mode toggled' : 'failed');
     };
+    document.getElementById('mappingStartBtn').onclick = async () => {
+      flash((await post('/mapping/start')) ? 'mapping started' : 'failed');
+    };
+    document.getElementById('mappingFinishBtn').onclick = async () => {
+      flash((await post('/mapping/finish')) ? 'mapping saved' : 'failed');
+    };
+    document.getElementById('mappingReturnBtn').onclick = async () => {
+      flash((await post('/mapping/return')) ? 'manual return enabled' : 'failed');
+    };
+    document.getElementById('mappingResumeBtn').onclick = async () => {
+      flash((await post('/mapping/resume')) ? 'relocalizing checkpoint' : 'failed');
+    };
+    document.getElementById('semanticGoBtn').onclick = async () => {
+      const label = document.getElementById('semanticClass').value.trim();
+      flash((await post('/semantic/go', {class: label})) ? 'semantic goal sent' : 'failed');
+    };
 
     // Right half of the combined stream is the map panel — click it to set a goal.
-    document.getElementById('stream').addEventListener('click', async (e) => {
-      const rect = e.target.getBoundingClientRect();
+    async function setMapGoalFromClick(e) {
+      const rect = document.getElementById('stream').getBoundingClientRect();
       const fx = (e.clientX - rect.left) / rect.width;
       const fy = (e.clientY - rect.top) / rect.height;
       if (fx < 0.5) {
@@ -159,7 +208,8 @@ _INDEX_HTML = """<!doctype html>
       }
       const ok = await post('/goal/set', {fx: (fx - 0.5) * 2, fy: fy});
       flash(ok ? 'goal set' : 'failed');
-    });
+    }
+    document.getElementById('stream').addEventListener('click', setMapGoalFromClick);
 
     document.getElementById('camera').addEventListener('click', async (e) => {
       const rect = e.target.getBoundingClientRect();
@@ -191,20 +241,88 @@ _INDEX_HTML = """<!doctype html>
       btn.addEventListener('touchcancel', stopDrive);
     });
 
+    // Keyboard drive supports simultaneous keys. Re-send while held to stay
+    // inside drive_node's command timeout, and always stop on blur/visibility loss.
+    const driveKeys = new Set();
+    const keyState = document.getElementById('keyState');
+    function sendKeyboardDrive() {
+      const forward = (driveKeys.has('w') ? 1 : 0) - (driveKeys.has('s') ? 1 : 0);
+      const turn = (driveKeys.has('a') ? 1 : 0) - (driveKeys.has('d') ? 1 : 0);
+      const active = [...driveKeys].map(k => k.toUpperCase()).sort().join('+');
+      keyState.textContent = active ? 'WASD: ' + active : 'WASD: stopped';
+      post('/drive/vector', {forward, turn});
+    }
+    function isTyping() {
+      const tag = document.activeElement && document.activeElement.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+    document.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      if (!'wasd'.includes(key) || isTyping()) return;
+      e.preventDefault();
+      if (!driveKeys.has(key)) { driveKeys.add(key); sendKeyboardDrive(); }
+    });
+    document.addEventListener('keyup', (e) => {
+      const key = e.key.toLowerCase();
+      if (!'wasd'.includes(key)) return;
+      e.preventDefault(); driveKeys.delete(key); sendKeyboardDrive();
+    });
+    setInterval(() => { if (driveKeys.size) sendKeyboardDrive(); }, 180);
+    function keyboardStop() {
+      if (driveKeys.size) { driveKeys.clear(); sendKeyboardDrive(); }
+      else post('/drive/vector', {forward:0, turn:0});
+    }
+    window.addEventListener('blur', keyboardStop);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) keyboardStop(); });
+
     // Poll the current navigation status + live obstacle-block state.
     const navStatus = document.getElementById('navStatus');
     async function pollNavStatus() {
       try {
         const resp = await fetch('/nav_status');
         const data = await resp.json();
-        let text = 'nav: ' + data.status;
-        if (data.obstacle_blocked) text += '  |  ⚠ 前方障碍物,紧急停止';
+        let text = 'nav: ' + data.status + '  |  mapping: ' + data.mapping_state + ' (' + data.mapping_detail + ')';
+        if (data.obstacle_blocked) text += '  |  WARNING: obstacle blocking forward motion';
         navStatus.textContent = text;
         navStatus.classList.toggle('obstacle', !!data.obstacle_blocked);
       } catch (e) { /* keep last known text on a transient fetch failure */ }
     }
     pollNavStatus();
     setInterval(pollNavStatus, 500);
+
+    const canvas = document.getElementById('traceCanvas');
+    const tooltip = document.getElementById('tooltip');
+    let tracePoints = [];
+    async function updateTrace() {
+      try {
+        const data = await (await fetch('/mapping_trace')).json();
+        const rect = document.getElementById('stream').getBoundingClientRect();
+        canvas.width = Math.max(1, Math.round(rect.width));
+        canvas.height = Math.max(1, Math.round(rect.height));
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        tracePoints = data.points || [];
+        tracePoints.forEach((p, i) => {
+          p.px = p.fx * canvas.width; p.py = p.fy * canvas.height;
+          if (i && tracePoints[i-1].fx != null && p.fx != null) {
+            ctx.strokeStyle = '#28c76f'; ctx.lineWidth = 2; ctx.beginPath();
+            ctx.moveTo(tracePoints[i-1].px, tracePoints[i-1].py); ctx.lineTo(p.px, p.py); ctx.stroke();
+          }
+          ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.px, p.py, p.radius || 4, 0, 2*Math.PI); ctx.fill();
+        });
+      } catch (e) {}
+    }
+    canvas.onmousemove = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      const point = tracePoints.find(p => Math.hypot(p.px-x, p.py-y) < 9);
+      if (!point) { tooltip.style.display='none'; return; }
+      tooltip.textContent = point.tooltip; tooltip.style.display='block';
+      tooltip.style.left=(e.clientX+12)+'px'; tooltip.style.top=(e.clientY+12)+'px';
+    };
+    canvas.onmouseleave = () => tooltip.style.display='none';
+    canvas.onclick = setMapGoalFromClick;
+    updateTrace(); setInterval(updateTrace, 1000);
   </script>
 </body>
 </html>
@@ -289,7 +407,7 @@ def _render_occupancy_panel(
     grid: OccupancyGrid | None,
     pose: tuple[float, float, float] | None,
     path: Path | None,
-    obstacle_marks: list[tuple[float, float, str]],
+    obstacle_marks: list[tuple[float, float, str, float | None]],
     h: int,
     w: int,
 ) -> np.ndarray:
@@ -351,7 +469,7 @@ def _render_occupancy_panel(
         cv2.polylines(img, [pts], isClosed=False, color=(255, 0, 255), thickness=2)
         cv2.drawMarker(img, tuple(pts[-1]), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 14, 2)
 
-    for x, y, label in obstacle_marks:
+    for x, y, label, _ in obstacle_marks:
         col = (x - grid.info.origin.position.x) / res
         row = (y - grid.info.origin.position.y) / res
         if 0 <= col < gw and 0 <= row < gh:
@@ -407,6 +525,7 @@ class _MjpegHandler(BaseHTTPRequestHandler):
     # each just forwards to one DashboardNode method.
     _ROUTES = {
         "/reset": lambda node, body: node.reset_map(),
+        "/markers/clear": lambda node, body: node.clear_markers(),
         "/goal/set": lambda node, body: node.set_goal_from_fraction(
             float(body.get("fx", 0.5)), float(body.get("fy", 0.5))
         ),
@@ -414,9 +533,17 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         "/goal/clear": lambda node, body: node.clear_goal(),
         "/mode/toggle": lambda node, body: node.toggle_mode(),
         "/drive": lambda node, body: node.drive(str(body.get("dir", "stop"))),
+        "/drive/vector": lambda node, body: node.drive_vector(
+            float(body.get("forward", 0.0)), float(body.get("turn", 0.0))
+        ),
         "/obstacle/mark": lambda node, body: node.mark_obstacle(
             float(body.get("u_fraction", -1.0)), float(body.get("v_fraction", -1.0))
         ),
+        "/mapping/start": lambda node, body: node.mapping_command("START"),
+        "/mapping/finish": lambda node, body: node.mapping_command("FINISH"),
+        "/mapping/return": lambda node, body: node.mapping_command("RETURN"),
+        "/mapping/resume": lambda node, body: node.mapping_command("RESUME"),
+        "/semantic/go": lambda node, body: node.semantic_goal(str(body.get("class", "chair"))),
     }
 
     def log_message(self, *args) -> None:
@@ -429,15 +556,24 @@ class _MjpegHandler(BaseHTTPRequestHandler):
             self._serve_stream(camera=True)
         elif self.path == "/nav_status":
             self._serve_nav_status()
+        elif self.path == "/mapping_trace":
+            self._serve_json(_MjpegHandler.node.mapping_trace() if _MjpegHandler.node else {"points": []})
+        elif self.path == "/mapping_log":
+            self._serve_mapping_log()
         else:
             self._serve_index()
 
     def _serve_nav_status(self) -> None:
         node = _MjpegHandler.node
         payload = {
-            "status": node._nav_status if node else "未知",
+            "status": node._nav_status if node else "Unknown",
             "obstacle_blocked": node._obstacle_blocked if node else False,
+            "mapping_state": node._mapping_status.get("state", "UNKNOWN") if node else "UNKNOWN",
+            "mapping_detail": node._mapping_status.get("detail", "") if node else "",
         }
+        self._serve_json(payload)
+
+    def _serve_json(self, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -452,6 +588,19 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_mapping_log(self) -> None:
+        node = _MjpegHandler.node
+        session = node.latest_session_dir() if node else None
+        path = session / "full_log.jsonl" if session else None
+        if path is None or not path.exists():
+            self.send_response(404); self.end_headers(); return
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Content-Disposition", f'attachment; filename="{session.name}_full_log.jsonl"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
 
     def _serve_stream(self, camera: bool = False) -> None:
         self.send_response(200)
@@ -523,10 +672,11 @@ class DashboardNode(Node):
         self._ultrasonic_stamp = 0.0
         self._goal_pose: tuple[float, float, float] | None = None
         self._nav_goal_handle = None
-        self._nav_status = "未开始"
+        self._nav_status = "Not started"
         self._obstacle_blocked = False
+        self._mapping_status: dict = {"state": "IDLE", "detail": "monitor unavailable"}
         self._camera_image: np.ndarray | None = None
-        self._obstacle_marks: list[tuple[float, float, str]] = []
+        self._obstacle_marks: list[tuple[float, float, str, float | None]] = []
         self._detections: list[dict] = []
 
         self.declare_parameter("camera_fx", 0.0)
@@ -542,6 +692,11 @@ class DashboardNode(Node):
         self.declare_parameter("camera_y_m", 0.0)
         self.declare_parameter("camera_pitch_down_deg", 0.0)
         self.declare_parameter("camera_yaw_left_deg", 0.0)
+        self.declare_parameter("automatic_marker_ttl_s", 3.0)
+        self.declare_parameter("mapping_session_root", "/home/konkon/dev/autonomous-rover/mapping_sessions")
+        self._automatic_marker_ttl = float(
+            self.get_parameter("automatic_marker_ttl_s").value
+        )
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -564,8 +719,12 @@ class DashboardNode(Node):
         self.create_subscription(
             String, "/rover/object_detections", self._on_object_detections, 10
         )
+        self.create_subscription(String, "/rover/semantic_objects", self._on_semantic_objects, 10)
+        self.create_subscription(String, "/rover/mapping_status", self._on_mapping_status, 10)
 
         self._mode_pub = self.create_publisher(String, "/rover/mode", _CMD_QOS)
+        self._mapping_control_pub = self.create_publisher(String, "/rover/mapping_control", 10)
+        self._semantic_goal_pub = self.create_publisher(String, "/rover/semantic_goal", 10)
         self._teleop_pub = self.create_publisher(Twist, "/rover/cmd_vel_teleop", _CMD_QOS)
         self._compute_path_client = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self._navigate_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -606,25 +765,81 @@ class DashboardNode(Node):
     def _on_obstacle_blocked(self, msg: Bool) -> None:
         self._obstacle_blocked = msg.data
 
+    def _on_mapping_status(self, msg: String) -> None:
+        try:
+            self._mapping_status = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self._mapping_status = {"state": "UNKNOWN", "detail": msg.data}
+
+    def mapping_command(self, command: str) -> None:
+        self._mapping_control_pub.publish(String(data=command))
+
+    def semantic_goal(self, label: str) -> None:
+        if not label.strip():
+            raise ValueError("semantic class cannot be empty")
+        self._publish_mode("AUTO")
+        self._semantic_goal_pub.publish(String(data=label.strip()))
+
+    def mapping_trace(self) -> dict:
+        grid = self._occupancy_grid
+        session = self.latest_session_dir()
+        session_dir = str(session) if session else None
+        if grid is None or not session_dir:
+            return {"status": self._mapping_status, "points": []}
+        try:
+            summary = json.loads((Path(session_dir) / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"status": self._mapping_status, "points": []}
+        points = []
+        for item in summary.get("points", []):
+            if item.get("x") is None or item.get("y") is None:
+                continue
+            col = (item["x"] - grid.info.origin.position.x) / grid.info.resolution
+            row = (item["y"] - grid.info.origin.position.y) / grid.info.resolution
+            fx = 0.5 + 0.5 * col / max(1, grid.info.width)
+            fy = (grid.info.height - 1 - row) / max(1, grid.info.height)
+            event, status = item.get("event", ""), item.get("status", "")
+            color = "#28c76f"
+            if event == "CHECKPOINT": color = "#2d8cff"
+            elif status == "abnormal" or "TIMEOUT" in event: color = "#ff3b30"
+            elif event not in ("HEALTH_SAMPLE", "MAPPING_STARTED"): color = "#ffcc00"
+            reasons = ", ".join(r.get("code", "") for r in item.get("reasons", [])) or "none"
+            tooltip = (f"time: {item.get('time')}\nstate: {item.get('state')}\n"
+                       f"event: {event}\nreasons: {reasons}\naction: {item.get('action', '')}")
+            points.append({"fx": fx, "fy": fy, "color": color,
+                           "radius": 6 if event != "HEALTH_SAMPLE" else 3, "tooltip": tooltip})
+        return {"status": self._mapping_status, "points": points}
+
+    def latest_session_dir(self) -> Path | None:
+        active = self._mapping_status.get("session_dir")
+        if active:
+            return Path(active)
+        root = Path(str(self.get_parameter("mapping_session_root").value)).expanduser()
+        sessions = sorted(root.glob("session_*/summary.json"), reverse=True)
+        return sessions[0].parent if sessions else None
+
     def _on_object_detections(self, msg: String) -> None:
         try:
             detections = json.loads(msg.data)
             if not isinstance(detections, list):
                 raise ValueError("detection payload is not a list")
             self._detections = detections
-            for detection in detections:
-                if not bool(detection.get("project_to_ground", False)):
-                    continue
-                label = str(detection["label"])
-                confidence = float(detection["confidence"])
-                self.mark_obstacle(
-                    (float(detection["x1"]) + float(detection["x2"])) / 2.0,
-                    float(detection["y2"]),
-                    label=f"{label} {confidence:.0%}",
-                    merge_label=label,
-                )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self.get_logger().warn(f"Rejected object detections: {exc}")
+
+    def _on_semantic_objects(self, msg: String) -> None:
+        try:
+            objects = json.loads(msg.data)
+            manual = [marker for marker in self._obstacle_marks if marker[3] is None and
+                      not marker[2].startswith("semantic:")]
+            semantic = [
+                (float(obj["x"]), float(obj["y"]),
+                 f"semantic:{obj['class']}_{obj['id']} {obj['status']}", float("inf"))
+                for obj in objects if obj.get("status") == "confirmed"
+            ]
+            self._obstacle_marks = manual + semantic
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self.get_logger().warn(f"Rejected semantic objects: {exc}")
 
     def reset_map(self) -> None:
         """Kill slam_toolbox so launch (respawn=True) restarts it with a blank map."""
@@ -632,6 +847,11 @@ class DashboardNode(Node):
         self._occupancy_grid = None
         self._obstacle_marks.clear()
         subprocess.run(["pkill", "-f", "async_slam_toolbox_node"], check=False)
+
+    def clear_markers(self) -> None:
+        """Clear camera-derived map markers without resetting SLAM."""
+        self._obstacle_marks.clear()
+        self.get_logger().info("All camera obstacle markers cleared")
 
     def mark_obstacle(
         self,
@@ -693,23 +913,26 @@ class DashboardNode(Node):
             merge_index = next(
                 (
                     index
-                    for index, (old_x, old_y, old_label) in enumerate(self._obstacle_marks)
+                    for index, (old_x, old_y, old_label, _) in enumerate(
+                        self._obstacle_marks
+                    )
                     if old_label.startswith(merge_label + " ")
                     and math.hypot(map_x - old_x, map_y - old_y) < 0.25
                 ),
                 None,
             )
             if merge_index is not None:
-                old_x, old_y, _ = self._obstacle_marks[merge_index]
+                old_x, old_y, _, _ = self._obstacle_marks[merge_index]
                 self._obstacle_marks[merge_index] = (
                     0.7 * old_x + 0.3 * map_x,
                     0.7 * old_y + 0.3 * map_y,
                     label,
+                    time.monotonic(),
                 )
             else:
-                self._obstacle_marks.append((map_x, map_y, label))
+                self._obstacle_marks.append((map_x, map_y, label, time.monotonic()))
         else:
-            self._obstacle_marks.append((map_x, map_y, label))
+            self._obstacle_marks.append((map_x, map_y, label, None))
         self.get_logger().info(
             f"Obstacle: base=({point[0]:.2f}, {point[1]:.2f})m, "
             f"map=({map_x:.2f}, {map_y:.2f})m"
@@ -745,9 +968,9 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("compute_path_to_pose goal rejected")
-            self._nav_status = "路线规划失败"
+            self._nav_status = "Path planning failed"
             return
-        self._nav_status = "已规划,等待移动"
+        self._nav_status = "Path ready; waiting to move"
         # No further action needed — planner_server publishes the resulting
         # path to /plan itself, which _on_plan/_render already pick up.
         goal_handle.get_result_async()
@@ -768,10 +991,10 @@ class DashboardNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("navigate_to_pose goal rejected")
-            self._nav_status = "导航被拒绝"
+            self._nav_status = "Navigation rejected"
             return
         self._nav_goal_handle = goal_handle
-        self._nav_status = "导航中"
+        self._nav_status = "Navigating"
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_navigate_result)
 
@@ -779,19 +1002,16 @@ class DashboardNode(Node):
         self._nav_goal_handle = None
         status = future.result().status
         self.get_logger().info(f"navigate_to_pose finished: status={status}")
-        self._nav_status = _GOAL_STATUS_TEXT.get(status, f"未知状态({status})")
-        # Without wheel odometry, slam_toolbox occasionally mismatches a scan
-        # and permanently bakes a cluster of phantom points into the map —
-        # errors only accumulate over a run, never self-correct. Wiping the
-        # map after each navigation attempt bounds how much clutter can pile
-        # up, regardless of whether the goal was actually reached.
-        self.reset_map()
+        self._nav_status = _GOAL_STATUS_TEXT.get(status, f"Unknown status ({status})")
+        # Keep the map: mapping_monitor_node now detects corruption and owns
+        # checkpoint recovery. Resetting after every goal destroys route and
+        # semantic-map continuity.
 
     def clear_goal(self) -> None:
         """Cancel any in-flight navigation and clear the local goal/path state."""
         self._goal_pose = None
         self._nav_path = None
-        self._nav_status = "未开始"
+        self._nav_status = "Not started"
         if self._nav_goal_handle is not None:
             self._nav_goal_handle.cancel_goal_async()
             self._nav_goal_handle = None
@@ -805,6 +1025,16 @@ class DashboardNode(Node):
         msg = Twist()
         msg.linear.x = linear
         msg.angular.z = angular
+        self._teleop_pub.publish(msg)
+
+    def drive_vector(self, forward: float, turn: float) -> None:
+        """Drive from normalized WASD axes, allowing diagonal key combinations."""
+        forward = max(-1.0, min(1.0, forward))
+        turn = max(-1.0, min(1.0, turn))
+        self._publish_mode("MANUAL")
+        msg = Twist()
+        msg.linear.x = 0.2 * forward
+        msg.angular.z = turn
         self._teleop_pub.publish(msg)
 
     def _publish_mode(self, mode: str) -> None:
@@ -845,6 +1075,12 @@ class DashboardNode(Node):
         )
 
     def _render(self) -> None:
+        marker_cutoff = time.monotonic() - self._automatic_marker_ttl
+        self._obstacle_marks = [
+            marker
+            for marker in self._obstacle_marks
+            if marker[3] is None or marker[3] >= marker_cutoff
+        ]
         pose = self._lookup_pose()
 
         scan_panel = _render_scan_panel(self._scan, PANEL_H, PANEL_W)

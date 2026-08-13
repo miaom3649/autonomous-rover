@@ -20,6 +20,10 @@ setup(
         "console_scripts": [
             "dashboard_node = rover_navigation.dashboard_node:main",
             "object_detector_node = rover_navigation.object_detector_node:main",
+            "mapping_monitor_node = rover_navigation.mapping_monitor_node:main",
+            "object_localizer_node = rover_navigation.object_localizer_node:main",
+            "semantic_mapper_node = rover_navigation.semantic_mapper_node:main",
+            "semantic_navigation_node = rover_navigation.semantic_navigation_node:main",
         ],
     },
 )

@@ -30,6 +30,10 @@ class ObjectDetectorNode(Node):
         self._period = 1.0 / float(self.get_parameter("rate_hz").value)
         self._timeout = float(self.get_parameter("timeout_s").value)
         self._ground_labels = set(self.get_parameter("ground_labels").value)
+        self._session = requests.Session()
+        # The Pi may use an internet proxy, but the detector is a direct LAN
+        # service. Never route camera frames through that proxy.
+        self._session.trust_env = False
         self._last_request = 0.0
         self._busy = False
         self._lock = threading.Lock()
@@ -58,18 +62,23 @@ class ObjectDetectorNode(Node):
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             elif message.encoding != "bgr8":
                 raise ValueError(f"unsupported encoding: {message.encoding}")
-            threading.Thread(target=self._request, args=(frame.copy(),), daemon=True).start()
+            stamp_ns = int(message.header.stamp.sec) * 1_000_000_000 + int(
+                message.header.stamp.nanosec
+            )
+            threading.Thread(
+                target=self._request, args=(frame.copy(), stamp_ns), daemon=True
+            ).start()
         except Exception as exc:
             with self._lock:
                 self._busy = False
             self.get_logger().warn(f"Could not prepare detector frame: {exc}")
 
-    def _request(self, frame: np.ndarray) -> None:
+    def _request(self, frame: np.ndarray, stamp_ns: int) -> None:
         try:
             ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
                 raise RuntimeError("JPEG encoding failed")
-            response = requests.post(
+            response = self._session.post(
                 self._url,
                 data=encoded.tobytes(),
                 headers={"Content-Type": "image/jpeg"},
@@ -80,6 +89,7 @@ class ObjectDetectorNode(Node):
             detections = payload["detections"]
             for detection in detections:
                 detection["project_to_ground"] = detection["label"] in self._ground_labels
+                detection["image_stamp_ns"] = stamp_ns
             self._publisher.publish(String(data=json.dumps(detections)))
         except Exception as exc:
             self.get_logger().warn(f"Object detection request failed: {exc}")

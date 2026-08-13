@@ -21,6 +21,11 @@ _MODE_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+_LOCK_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class ModeControllerNode(Node):
@@ -51,6 +56,7 @@ class ModeControllerNode(Node):
         self._last_range: float | None = None
         self._last_range_time = None
         self._blocking_forward: bool = False
+        self._motion_locked: bool = False
 
         self._pub_cmd = self.create_publisher(Twist, "/rover/cmd_vel", _RELIABLE)
         self._pub_mode = self.create_publisher(String, "/rover/current_mode", _MODE_QOS)
@@ -67,6 +73,7 @@ class ModeControllerNode(Node):
         self.create_subscription(
             Range, "/rover/ultrasonic/range", self._on_range, qos_profile_sensor_data
         )
+        self.create_subscription(Bool, "/rover/motion_lock", self._on_motion_lock, _LOCK_QOS)
 
         self.get_logger().info(f"Mode controller ready — starting in {self._mode} mode")
         self._publish_mode()
@@ -95,14 +102,24 @@ class ModeControllerNode(Node):
             self.get_logger().info(f"Emergency stop cleared — mode: {self._mode}")
 
     def _on_teleop(self, msg: Twist) -> None:
-        if self._estopped or self._mode != _MANUAL:
+        if self._estopped or self._motion_locked or self._mode != _MANUAL:
             return
         self._dispatch(msg)
 
     def _on_nav(self, msg: Twist) -> None:
-        if self._estopped or self._mode != _AUTO:
+        if self._estopped or self._motion_locked or self._mode != _AUTO:
             return
         self._dispatch(msg)
+
+    def _on_motion_lock(self, msg: Bool) -> None:
+        if msg.data == self._motion_locked:
+            return
+        self._motion_locked = msg.data
+        if self._motion_locked:
+            self.get_logger().warn("Motion locked by mapping safety monitor")
+            self._send_zero()
+        else:
+            self.get_logger().info("Mapping safety motion lock released")
 
     def _dispatch(self, msg: Twist) -> None:
         if msg.linear.x > 0.0 and self._obstacle_ahead():
