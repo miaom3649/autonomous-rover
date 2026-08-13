@@ -302,7 +302,8 @@ _INDEX_HTML = """<!doctype html>
     function stateClass(value, kind) {
       const text = String(value).toUpperCase();
       if (text.includes('FAIL') || text.includes('INVALID') || text.includes('ABORT')) return 'bad';
-      if (text.includes('RECOVER') || text.includes('RETURN') || text.includes('BLOCK')) return 'warn';
+      if (text.includes('RECOVER') || text.includes('RETURN') || text.includes('BLOCK') ||
+          text.includes('LOCALIZ') || text.includes('SAVING')) return 'warn';
       if (text.includes('REACHED') || text === 'WORKING' || text === 'MAPPING') return 'good';
       return kind === 'mapping' && text === 'SAVING_MAP' ? 'info' : '';
     }
@@ -850,6 +851,8 @@ class DashboardNode(Node):
         self._publish_mode("MANUAL")
 
     def semantic_goal(self, label: str) -> None:
+        if self._mapping_status.get("state") != "WORKING":
+            raise ValueError("navigation is available only after localization is stable")
         if not label.strip():
             raise ValueError("semantic class cannot be empty")
         self._publish_mode("AUTO")
@@ -1019,6 +1022,8 @@ class DashboardNode(Node):
 
     def set_goal_from_fraction(self, fx: float, fy: float) -> None:
         """Convert a click on the map panel (fractional x/y, 0..1) to a map-frame goal."""
+        if self._mapping_status.get("state") != "WORKING":
+            raise ValueError("set navigation goals only after localization is stable")
         grid = self._occupancy_grid
         if grid is None:
             self.get_logger().warn("Can't set goal — no /map yet")
@@ -1056,6 +1061,8 @@ class DashboardNode(Node):
 
     def move_to_goal(self) -> None:
         """Send the last-set goal as a real NavigateToPose action, forcing AUTO mode."""
+        if self._mapping_status.get("state") != "WORKING":
+            raise ValueError("navigation is available only after localization is stable")
         if self._goal_pose is None:
             self.get_logger().warn("Move requested but no goal is set")
             return

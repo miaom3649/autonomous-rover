@@ -36,6 +36,7 @@ class MappingMonitorNode(Node):
             self.declare_parameter(name, default)
         self.declare_parameter("session_root", "mapping_sessions")
         self.declare_parameter("slam_params_file", "")
+        self.declare_parameter("slam_localization_params_file", "")
 
         self._thresholds = HealthThresholds(
             pose_jump_m=float(self.get_parameter("pose_jump_m").value),
@@ -60,6 +61,8 @@ class MappingMonitorNode(Node):
         self._slam_command: list[str] | None = None
         self._slam_log_path: Path | None = None
         self._finish_pose: tuple[float, float, float] | None = None
+        self._localization_started_wall = 0.0
+        self._localization_ready_count = 0
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -71,6 +74,7 @@ class MappingMonitorNode(Node):
         self.create_timer(float(self.get_parameter("sample_period_s").value), self._sample)
         self.create_timer(2.0, self._ensure_slam_running)
         self.create_timer(0.5, self._complete_map_save)
+        self.create_timer(0.2, self._check_localization_ready)
         self._publish_status("no map; click Start mapping")
 
     def _on_scan(self, msg: LaserScan) -> None:
@@ -148,11 +152,29 @@ class MappingMonitorNode(Node):
             "localization", pose=self._finish_pose,
             posegraph=str(self._session_dir / "final_posegraph"), restart=True,
         )
+        self._state = "LOCALIZING"
+        self._localization_started_wall = time.time()
+        self._localization_ready_count = 0
+        self._set_lock(True)
+        self._publish_status("localization starting; waiting for fresh stable TF")
+
+    def _check_localization_ready(self) -> None:
+        if self._state != "LOCALIZING":
+            return
+        try:
+            transform = self._tf_buffer.lookup_transform("map", "base_link", rclpy.time.Time())
+            stamp = transform.header.stamp.sec + transform.header.stamp.nanosec * 1e-9
+            fresh = stamp >= self._localization_started_wall - 0.2 and time.time() - stamp < 0.7
+        except Exception:
+            fresh = False
+        self._localization_ready_count = self._localization_ready_count + 1 if fresh else 0
+        if self._localization_ready_count < 5:
+            return
         self._state = "WORKING"
         self._set_lock(False)
         self._record_event("WORK_MODE_STARTED", [],
-                           "fixed-map localization and semantic mapping enabled")
-        self._publish_status("working; fixed-map localization enabled")
+                           "fixed-map localization TF stable; semantic mapping enabled")
+        self._publish_status("working; fixed-map localization stable")
 
     def _reset_runtime_state(self) -> None:
         self._previous = None
@@ -161,6 +183,8 @@ class MappingMonitorNode(Node):
         self._scan = None
         self._scan_time = self._map_time = 0.0
         self._finish_pose = None
+        self._localization_started_wall = 0.0
+        self._localization_ready_count = 0
 
     def _reset_to_startup(self) -> None:
         if self._session_dir:
@@ -210,7 +234,9 @@ class MappingMonitorNode(Node):
             except subprocess.TimeoutExpired:
                 self._slam_process.kill()
                 self._slam_process.wait(timeout=2.0)
-        params = str(self.get_parameter("slam_params_file").value)
+        param_name = ("slam_params_file" if mode == "mapping"
+                      else "slam_localization_params_file")
+        params = str(self.get_parameter(param_name).value)
         executable = ("async_slam_toolbox_node" if mode == "mapping"
                       else "localization_slam_toolbox_node")
         command = ["ros2", "run", "slam_toolbox", executable, "--ros-args",

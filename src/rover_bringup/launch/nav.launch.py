@@ -18,6 +18,9 @@ def generate_launch_description() -> LaunchDescription:
     slam_toolbox_params = os.path.join(
         home, "dev", "autonomous-rover", "config", "slam_toolbox_params.yaml"
     )
+    slam_localization_params = os.path.join(
+        home, "dev", "autonomous-rover", "config", "slam_toolbox_localization_params.yaml"
+    )
     rf2o_params = os.path.join(home, "dev", "autonomous-rover", "config", "rf2o_params.yaml")
     camera_projection_params = os.path.join(
         home, "dev", "autonomous-rover", "config", "camera_projection_params.yaml"
@@ -100,7 +103,10 @@ def generate_launch_description() -> LaunchDescription:
                 package="rover_navigation",
                 executable="mapping_monitor_node",
                 name="mapping_monitor_node",
-                parameters=[mapping_monitor_params, {"slam_params_file": slam_toolbox_params}],
+                parameters=[mapping_monitor_params, {
+                    "slam_params_file": slam_toolbox_params,
+                    "slam_localization_params_file": slam_localization_params,
+                }],
             ),
             Node(
                 package="rover_navigation",

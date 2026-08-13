@@ -12,3 +12,4 @@ mapping_monitor_node:
     checkpoint_period_s: 15.0
     session_root: "/home/konkon/dev/autonomous-rover/mapping_sessions"
     slam_params_file: "/home/konkon/dev/autonomous-rover/config/slam_toolbox_params.yaml"
+    slam_localization_params_file: "/home/konkon/dev/autonomous-rover/config/slam_toolbox_localization_params.yaml"

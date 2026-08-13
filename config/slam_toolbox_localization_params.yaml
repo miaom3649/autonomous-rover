@@ -1,0 +1,46 @@
+slam_toolbox:
+  ros__parameters:
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    mode: localization
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+
+    # Localization must discard stale scans rather than building a backlog on
+    # the Pi. Process at most 2 scans/s and keep only the newest queued scan.
+    throttle_scans: 1
+    minimum_time_interval: 0.5
+    scan_queue_size: 1
+    scan_buffer_size: 3
+    scan_buffer_maximum_scan_distance: 3.0
+
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.10
+    minimum_travel_heading: 0.10
+    check_min_dist_and_heading_precisely: false
+
+    resolution: 0.05
+    max_laser_range: 4.0
+    map_update_interval: 5.0
+    do_loop_closing: false
+
+    # Publish map->odom frequently and stamp it near wall-clock time so Nav2
+    # does not ask for a transform newer than localization has published.
+    transform_publish_period: 0.02
+    transform_timeout: 0.5
+    restamp_tf: true
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+
+    map_file_name: ""
+    map_start_pose: [0.0, 0.0, 0.0]
+    map_start_at_dock: false
+    debug_logging: false
