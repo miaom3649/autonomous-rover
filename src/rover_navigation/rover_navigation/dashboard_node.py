@@ -82,12 +82,15 @@ _INDEX_HTML = """<!doctype html>
 <head>
 <title>Rover Dashboard</title>
 <style>
-  body { margin:0; background:#111; color:#eee; font-family:sans-serif; user-select:none; }
-  button { font-size:16px; padding:6px 14px; }
-  #toolbar { padding:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; width:100%; min-height:100%; background:#111; color:#eee;
+               font-family:sans-serif; user-select:none; overflow-x:hidden; }
+  button, input { font-size:clamp(13px, 1.4vw, 16px); padding:6px 12px; max-width:100%; }
+  #toolbar { padding:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; width:100%; }
   #hint { padding:0 8px 4px; font-size:13px; color:#999; }
+  #driveArea { display:flex; align-items:center; justify-content:center; gap:18px; flex-wrap:wrap; }
   #dpad {
-    padding:12px; display:grid; gap:4px; justify-content:center;
+    padding:8px; display:grid; gap:4px; justify-content:center;
     grid-template-columns:56px 56px 56px; grid-template-rows:56px 56px 56px;
   }
   #dpad button { font-size:20px; padding:0; }
@@ -95,10 +98,21 @@ _INDEX_HTML = """<!doctype html>
     padding:6px 12px; font-size:14px; background:#333; border-bottom:1px solid #000;
   }
   #navStatus.obstacle { background:#5a1a1a; color:#ffb3b3; }
-  #mapWrap { position:relative; width:100%; }
+  #mapWrap { position:relative; width:100vw; max-width:100%; }
+  #stream { width:100%; height:auto; max-height:calc(100vh - 150px); object-fit:contain;
+            display:block; background:#000; }
   #traceCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
   #tooltip { position:fixed; display:none; background:#222; border:1px solid #aaa;
              padding:7px; white-space:pre; font-size:12px; pointer-events:none; z-index:5; }
+  #camera { width:min(100%, 640px); height:auto; max-height:55vh; object-fit:contain;
+            display:block; margin:auto; background:#000; }
+  #keyState { min-width:155px; color:#aaa; font-family:monospace; text-align:center; }
+  @media (max-width:700px) {
+    #toolbar { padding:5px; gap:4px; }
+    button, input { padding:7px 9px; }
+    #navStatus { font-size:12px; }
+    #stream { max-height:60vh; }
+  }
 </style>
 </head>
 <body>
@@ -118,15 +132,18 @@ _INDEX_HTML = """<!doctype html>
     <span id="status"></span>
   </div>
   <div id="hint">Click the map panel (right half) to set a goal</div>
-  <div id="mapWrap"><img id="stream" src="/stream" style="width:100%;display:block">
+  <div id="mapWrap"><img id="stream" src="/stream">
     <canvas id="traceCanvas"></canvas></div><div id="tooltip"></div>
   <div id="hint">Click where an obstacle touches the ground to mark it on the map</div>
-  <img id="camera" src="/camera_stream" style="width:min(100%,640px);display:block;margin:auto">
-  <div id="dpad">
-    <div></div><button class="drive" data-dir="up">&#9650;</button><div></div>
-    <button class="drive" data-dir="left">&#9664;</button><div></div>
-    <button class="drive" data-dir="right">&#9654;</button>
-    <div></div><button class="drive" data-dir="down">&#9660;</button><div></div>
+  <img id="camera" src="/camera_stream">
+  <div id="driveArea">
+    <div id="dpad">
+      <div></div><button class="drive" data-dir="up">W</button><div></div>
+      <button class="drive" data-dir="left">A</button><div></div>
+      <button class="drive" data-dir="right">D</button>
+      <div></div><button class="drive" data-dir="down">S</button><div></div>
+    </div>
+    <div id="keyState">WASD: stopped</div>
   </div>
   <script>
     const status = document.getElementById('status');
@@ -181,8 +198,8 @@ _INDEX_HTML = """<!doctype html>
     };
 
     // Right half of the combined stream is the map panel — click it to set a goal.
-    document.getElementById('stream').addEventListener('click', async (e) => {
-      const rect = e.target.getBoundingClientRect();
+    async function setMapGoalFromClick(e) {
+      const rect = document.getElementById('stream').getBoundingClientRect();
       const fx = (e.clientX - rect.left) / rect.width;
       const fy = (e.clientY - rect.top) / rect.height;
       if (fx < 0.5) {
@@ -191,7 +208,8 @@ _INDEX_HTML = """<!doctype html>
       }
       const ok = await post('/goal/set', {fx: (fx - 0.5) * 2, fy: fy});
       flash(ok ? 'goal set' : 'failed');
-    });
+    }
+    document.getElementById('stream').addEventListener('click', setMapGoalFromClick);
 
     document.getElementById('camera').addEventListener('click', async (e) => {
       const rect = e.target.getBoundingClientRect();
@@ -222,6 +240,40 @@ _INDEX_HTML = """<!doctype html>
       btn.addEventListener('touchend', stopDrive);
       btn.addEventListener('touchcancel', stopDrive);
     });
+
+    // Keyboard drive supports simultaneous keys. Re-send while held to stay
+    // inside drive_node's command timeout, and always stop on blur/visibility loss.
+    const driveKeys = new Set();
+    const keyState = document.getElementById('keyState');
+    function sendKeyboardDrive() {
+      const forward = (driveKeys.has('w') ? 1 : 0) - (driveKeys.has('s') ? 1 : 0);
+      const turn = (driveKeys.has('a') ? 1 : 0) - (driveKeys.has('d') ? 1 : 0);
+      const active = [...driveKeys].map(k => k.toUpperCase()).sort().join('+');
+      keyState.textContent = active ? 'WASD: ' + active : 'WASD: stopped';
+      post('/drive/vector', {forward, turn});
+    }
+    function isTyping() {
+      const tag = document.activeElement && document.activeElement.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+    document.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      if (!'wasd'.includes(key) || isTyping()) return;
+      e.preventDefault();
+      if (!driveKeys.has(key)) { driveKeys.add(key); sendKeyboardDrive(); }
+    });
+    document.addEventListener('keyup', (e) => {
+      const key = e.key.toLowerCase();
+      if (!'wasd'.includes(key)) return;
+      e.preventDefault(); driveKeys.delete(key); sendKeyboardDrive();
+    });
+    setInterval(() => { if (driveKeys.size) sendKeyboardDrive(); }, 180);
+    function keyboardStop() {
+      if (driveKeys.size) { driveKeys.clear(); sendKeyboardDrive(); }
+      else post('/drive/vector', {forward:0, turn:0});
+    }
+    window.addEventListener('blur', keyboardStop);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) keyboardStop(); });
 
     // Poll the current navigation status + live obstacle-block state.
     const navStatus = document.getElementById('navStatus');
@@ -269,6 +321,7 @@ _INDEX_HTML = """<!doctype html>
       tooltip.style.left=(e.clientX+12)+'px'; tooltip.style.top=(e.clientY+12)+'px';
     };
     canvas.onmouseleave = () => tooltip.style.display='none';
+    canvas.onclick = setMapGoalFromClick;
     updateTrace(); setInterval(updateTrace, 1000);
   </script>
 </body>
@@ -480,6 +533,9 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         "/goal/clear": lambda node, body: node.clear_goal(),
         "/mode/toggle": lambda node, body: node.toggle_mode(),
         "/drive": lambda node, body: node.drive(str(body.get("dir", "stop"))),
+        "/drive/vector": lambda node, body: node.drive_vector(
+            float(body.get("forward", 0.0)), float(body.get("turn", 0.0))
+        ),
         "/obstacle/mark": lambda node, body: node.mark_obstacle(
             float(body.get("u_fraction", -1.0)), float(body.get("v_fraction", -1.0))
         ),
@@ -969,6 +1025,16 @@ class DashboardNode(Node):
         msg = Twist()
         msg.linear.x = linear
         msg.angular.z = angular
+        self._teleop_pub.publish(msg)
+
+    def drive_vector(self, forward: float, turn: float) -> None:
+        """Drive from normalized WASD axes, allowing diagonal key combinations."""
+        forward = max(-1.0, min(1.0, forward))
+        turn = max(-1.0, min(1.0, turn))
+        self._publish_mode("MANUAL")
+        msg = Twist()
+        msg.linear.x = 0.2 * forward
+        msg.angular.z = turn
         self._teleop_pub.publish(msg)
 
     def _publish_mode(self, mode: str) -> None:
