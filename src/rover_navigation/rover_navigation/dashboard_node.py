@@ -138,6 +138,7 @@ _INDEX_HTML = """<!doctype html>
     <button id="moveBtn">Move</button>
     <button id="clearBtn">Clear goal</button>
     <button id="traceToggleBtn">Hide trace</button>
+    <button id="followRoverBtn">Full map</button>
     <button id="mappingStartBtn">Start mapping</button>
     <button id="mappingFinishBtn">Finish mapping</button>
     <button id="mappingResumeBtn">Resume checkpoint</button>
@@ -202,6 +203,13 @@ _INDEX_HTML = """<!doctype html>
       traceVisible = !traceVisible;
       document.getElementById('traceCanvas').style.display = traceVisible ? 'block' : 'none';
       document.getElementById('traceToggleBtn').textContent = traceVisible ? 'Hide trace' : 'Show trace';
+    };
+    let followRover = true;
+    document.getElementById('followRoverBtn').onclick = async () => {
+      followRover = !followRover;
+      const ok = await post('/view/follow', {enabled: followRover});
+      if (!ok) followRover = !followRover;
+      document.getElementById('followRoverBtn').textContent = followRover ? 'Full map' : 'Follow rover';
     };
     document.getElementById('mappingStartBtn').onclick = async () => {
       flash((await post('/mapping/start')) ? 'mapping started' : 'failed');
@@ -467,6 +475,7 @@ def _render_occupancy_panel(
     obstacle_marks: list[tuple[float, float, str, float | None]],
     h: int,
     w: int,
+    follow_rover: bool = True,
 ) -> np.ndarray:
     """Render slam_toolbox's accumulated /map (nav_msgs/OccupancyGrid), top-down.
 
@@ -559,9 +568,24 @@ def _render_occupancy_panel(
             cv2.circle(img, center, round(circle_r), (0, 0, 255), -1)
             cv2.line(img, center, tick_end, (0, 0, 255), 2)
 
+    if follow_rover and pose is not None:
+        rover_x, rover_y = to_display(pose[0], pose[1])
+        img = cv2.warpAffine(
+            img,
+            np.array(
+                [[1.0, 0.0, w / 2.0 - rover_x], [0.0, 1.0, h / 2.0 - rover_y]],
+                dtype=np.float32,
+            ),
+            (w, h),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(40, 40, 40),
+        )
+
     cv2.putText(
         img,
-        f"slam_toolbox map ({gw}x{gh} @ {grid.info.resolution:.2f}m/px)",
+        f"slam_toolbox map ({gw}x{gh} @ {grid.info.resolution:.2f}m/px) "
+        f"{'FOLLOW ROVER' if follow_rover else 'FULL MAP'}",
         (6, 16),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -600,6 +624,9 @@ class _MjpegHandler(BaseHTTPRequestHandler):
         "/mapping/finish": lambda node, body: node.mapping_command("FINISH"),
         "/mapping/resume": lambda node, body: node.mapping_command("RESUME"),
         "/semantic/go": lambda node, body: node.semantic_goal(str(body.get("class", "chair"))),
+        "/view/follow": lambda node, body: node.set_follow_rover(
+            bool(body.get("enabled", True))
+        ),
     }
 
     def log_message(self, *args) -> None:
@@ -722,6 +749,7 @@ class DashboardNode(Node):
 
         self._scan: LaserScan | None = None
         self._occupancy_grid: OccupancyGrid | None = None
+        self._map_display_locked = False
         self._nav_path: Path | None = None
         self._mode = "unknown"
         self._ultrasonic_range: float | None = None
@@ -733,6 +761,7 @@ class DashboardNode(Node):
         self._mapping_status: dict = {"state": "IDLE", "detail": "monitor unavailable"}
         self._trace_suppressed = False
         self._trace_session_id: str | None = None
+        self._follow_rover = True
         self._camera_image: np.ndarray | None = None
         self._obstacle_marks: list[tuple[float, float, str, float | None]] = []
         self._detections: list[dict] = []
@@ -808,7 +837,12 @@ class DashboardNode(Node):
         )
 
     def _on_occupancy_grid(self, msg: OccupancyGrid) -> None:
-        self._occupancy_grid = msg
+        # localization_slam_toolbox maintains a rolling scan buffer and may
+        # republish OccupancyGrids with slightly different bounds/origins.
+        # Re-fitting each one makes the fixed map appear to wobble. Keep the
+        # final mapping grid as the display background in work mode.
+        if not self._map_display_locked:
+            self._occupancy_grid = msg
 
     def _on_mode(self, msg: String) -> None:
         self._mode = msg.data
@@ -826,6 +860,9 @@ class DashboardNode(Node):
     def _on_mapping_status(self, msg: String) -> None:
         try:
             self._mapping_status = json.loads(msg.data)
+            state = self._mapping_status.get("state")
+            if state in ("SAVING_MAP", "LOCALIZING", "WORKING"):
+                self._map_display_locked = self._occupancy_grid is not None
             session_id = self._mapping_status.get("session_id")
             if session_id and session_id != self._trace_session_id:
                 self._trace_session_id = session_id
@@ -836,6 +873,8 @@ class DashboardNode(Node):
     def mapping_command(self, command: str) -> None:
         if command == "FINISH" and self._mapping_status.get("state") != "MAPPING":
             raise ValueError("mapping is not currently running")
+        if command == "FINISH":
+            self._map_display_locked = self._occupancy_grid is not None
         self._mapping_control_pub.publish(String(data=command))
 
     def start_mapping(self) -> None:
@@ -843,6 +882,7 @@ class DashboardNode(Node):
         self._mapping_control_pub.publish(String(data="START"))
 
     def _clear_runtime_display(self) -> None:
+        self._map_display_locked = False
         self._occupancy_grid = None
         self._obstacle_marks.clear()
         self._detections = []
@@ -858,6 +898,9 @@ class DashboardNode(Node):
         self._publish_mode("AUTO")
         self._semantic_goal_pub.publish(String(data=label.strip()))
 
+    def set_follow_rover(self, enabled: bool) -> None:
+        self._follow_rover = enabled
+
     def mapping_trace(self) -> dict:
         grid = self._occupancy_grid
         if self._trace_suppressed:
@@ -871,13 +914,30 @@ class DashboardNode(Node):
         except (OSError, ValueError):
             return {"status": self._mapping_status, "points": []}
         points = []
+        rover_pose = self._lookup_pose() if self._follow_rover else None
+        rover_col_fraction = None
+        rover_row_fraction = None
+        if rover_pose is not None:
+            rover_col_fraction = (
+                (rover_pose[0] - grid.info.origin.position.x) / grid.info.resolution
+                / max(1, grid.info.width)
+            )
+            rover_row_fraction = (
+                grid.info.height - 1
+                - (rover_pose[1] - grid.info.origin.position.y) / grid.info.resolution
+            ) / max(1, grid.info.height)
         for item in summary.get("points", []):
             if item.get("x") is None or item.get("y") is None:
                 continue
             col = (item["x"] - grid.info.origin.position.x) / grid.info.resolution
             row = (item["y"] - grid.info.origin.position.y) / grid.info.resolution
-            fx = 0.5 + 0.5 * col / max(1, grid.info.width)
-            fy = (grid.info.height - 1 - row) / max(1, grid.info.height)
+            local_fx = col / max(1, grid.info.width)
+            local_fy = (grid.info.height - 1 - row) / max(1, grid.info.height)
+            if rover_col_fraction is not None and rover_row_fraction is not None:
+                local_fx += 0.5 - rover_col_fraction
+                local_fy += 0.5 - rover_row_fraction
+            fx = 0.5 + 0.5 * local_fx
+            fy = local_fy
             event, status = item.get("event", ""), item.get("status", "")
             color = "#28c76f"
             if event == "CHECKPOINT": color = "#2d8cff"
@@ -1030,6 +1090,14 @@ class DashboardNode(Node):
             return
         gw, gh = grid.info.width, grid.info.height
         res = grid.info.resolution
+        if self._follow_rover:
+            pose = self._lookup_pose()
+            if pose is None:
+                raise ValueError("current rover pose is unavailable")
+            rover_col = (pose[0] - grid.info.origin.position.x) / res
+            rover_display_row = gh - 1 - (pose[1] - grid.info.origin.position.y) / res
+            fx = fx - 0.5 + rover_col / gw
+            fy = fy - 0.5 + rover_display_row / gh
         col = fx * gw
         row = (1.0 - fy) * gh  # undo _render_occupancy_panel's vertical flip
         x = grid.info.origin.position.x + col * res
@@ -1171,7 +1239,8 @@ class DashboardNode(Node):
 
         scan_panel = _render_scan_panel(self._scan, PANEL_H, PANEL_W)
         occupancy_panel = _render_occupancy_panel(
-            self._occupancy_grid, pose, self._nav_path, self._obstacle_marks, PANEL_H, PANEL_W
+            self._occupancy_grid, pose, self._nav_path, self._obstacle_marks,
+            PANEL_H, PANEL_W, self._follow_rover
         )
         combined = np.hstack([scan_panel, occupancy_panel])
 
