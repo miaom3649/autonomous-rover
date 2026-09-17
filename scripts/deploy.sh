@@ -39,6 +39,10 @@ rm -rf build/rover_base build/rover_navigation build/rover_bringup build/rover_c
 # process per core exhausts RAM and swap-thrashes the system instead of
 # actually building faster.
 export MAKEFLAGS="-j1"
+# ydlidar_ros2_driver depends on the YDLidar-SDK, which isn't a ROS/apt
+# package — it's built from source into ~/.local (see README in
+# src/ydlidar_ros2_driver) so find_package(ydlidar_sdk) can locate it.
+export CMAKE_PREFIX_PATH="\$HOME/.local:\${CMAKE_PREFIX_PATH:-}"
 colcon build --symlink-install --parallel-workers 1 --event-handlers console_direct+
 
 mkdir -p /home/kk/maps
