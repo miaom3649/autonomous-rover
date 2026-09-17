@@ -9,6 +9,7 @@ class PixelFormat:
     ABGR8888 = None
     YUV420 = None
     YVU420 = None
+    NV12 = None
 
 class Card:
     pass
