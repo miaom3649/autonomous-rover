@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-ROVER_HOST="raspberrypi.local"
-ROVER_USER="konkon"
-ROVER_WS="/home/konkon/dev/autonomous-rover"
+ROVER_HOST="kk.local"
+ROVER_USER="kk"
+ROVER_WS="/home/kk/dev/autonomous-rover"
 REPO_URL="https://github.com/miaom3649/autonomous-rover.git"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -36,7 +36,7 @@ git reset --hard origin/$BRANCH
 rm -rf build/rover_base build/rover_navigation build/rover_bringup build/rover_control
 colcon build --symlink-install --parallel-workers 1
 
-mkdir -p /home/konkon/maps
+mkdir -p /home/kk/maps
 
 echo "Build complete."
 EOF
