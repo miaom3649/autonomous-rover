@@ -43,6 +43,11 @@ export MAKEFLAGS="-j1"
 # package — it's built from source into ~/.local (see README in
 # src/ydlidar_ros2_driver) so find_package(ydlidar_sdk) can locate it.
 export CMAKE_PREFIX_PATH="\$HOME/.local:\${CMAKE_PREFIX_PATH:-}"
+# The YDLidar-SDK's own generated ydlidar_sdkConfig.cmake ships with
+# YDLIDAR_SDK_LIBRARY_DIRS empty (upstream packaging bug), so the linker
+# only ever sees "-lydlidar_sdk" with no matching -L path. LIBRARY_PATH is
+# read directly by gcc/g++ at link time regardless of what CMake passed.
+export LIBRARY_PATH="\$HOME/.local/lib:\${LIBRARY_PATH:-}"
 colcon build --symlink-install --parallel-workers 1 --event-handlers console_direct+
 
 mkdir -p /home/kk/maps
