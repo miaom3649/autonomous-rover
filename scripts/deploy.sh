@@ -34,7 +34,12 @@ git reset --hard origin/$BRANCH
 # modules do not shadow the current source. The vendored lidar/rf2o C++
 # packages are left incremental because rebuilding them is expensive on Pi 4.
 rm -rf build/rover_base build/rover_navigation build/rover_bringup build/rover_control
-colcon build --symlink-install --parallel-workers 1
+# Cap compiler jobs per package too — on the 2GB Pi 4, letting a single
+# template-heavy package (e.g. rf2o_laser_odometry) spawn one compiler
+# process per core exhausts RAM and swap-thrashes the system instead of
+# actually building faster.
+export MAKEFLAGS="-j1"
+colcon build --symlink-install --parallel-workers 1 --event-handlers console_direct+
 
 mkdir -p /home/kk/maps
 
