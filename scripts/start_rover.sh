@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SESSION="rover"
-WS="/home/konkon/dev/autonomous-rover"
+WS="$HOME/dev/autonomous-rover"
 ROS_SETUP="/opt/ros/humble/setup.bash"
 WS_SETUP="$WS/install/setup.bash"
 USE_SIM="false"
