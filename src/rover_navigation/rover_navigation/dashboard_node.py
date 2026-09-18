@@ -781,7 +781,7 @@ class DashboardNode(Node):
         self.declare_parameter("camera_pitch_down_deg", 0.0)
         self.declare_parameter("camera_yaw_left_deg", 0.0)
         self.declare_parameter("automatic_marker_ttl_s", 3.0)
-        self.declare_parameter("mapping_session_root", "/home/konkon/dev/autonomous-rover/mapping_sessions")
+        self.declare_parameter("mapping_session_root", "/home/kk/dev/autonomous-rover/mapping_sessions")
         self._automatic_marker_ttl = float(
             self.get_parameter("automatic_marker_ttl_s").value
         )
